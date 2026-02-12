@@ -47,7 +47,7 @@ export function createApp(): MoribashiApp {
     strict: true,
   });
 
-  const plugins: MoribashiPlugin[] = [];
+  const pendingRegistrations: Promise<void>[] = [];
   const scopeRegistrations = new Map<symbol, Array<[string, Resolver<unknown>]>>();
   const activeScopes = new Set<MoribashiScope>();
   const initializedServices: Array<{ name: string; instance: unknown }> = [];
@@ -104,7 +104,10 @@ export function createApp(): MoribashiApp {
       return app;
     },
     use(plugin) {
-      plugins.push(plugin);
+      const result = plugin.register(app);
+      if (result && typeof result.then === 'function') {
+        pendingRegistrations.push(result);
+      }
       return app;
     },
     registerInScope(scopeKey, services) {
@@ -135,9 +138,10 @@ export function createApp(): MoribashiApp {
     async start() {
       if (started) throw new Error('App already started');
 
-      // 1. Call register on all plugins
-      for (const plugin of plugins) {
-        await plugin.register(app);
+      // 1. Await any async plugin registrations
+      if (pendingRegistrations.length > 0) {
+        await Promise.all(pendingRegistrations);
+        pendingRegistrations.length = 0;
       }
 
       // 2. Eagerly resolve all singletons and call onInit

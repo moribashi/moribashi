@@ -25,6 +25,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@moribashi/core": "workspace:*"
+    "@moribashi/common": "workspace:*",
+    "@moribashi/core": "workspace:*",
+    "fastify": "^5.7.4"
   }
 }
