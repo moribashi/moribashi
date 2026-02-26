@@ -7,6 +7,7 @@
       "@moribashi/common": ["../../packages/common/src/index.ts"],
       "@moribashi/core": ["../../packages/core/src/index.ts"],
       "@moribashi/cli": ["../../packages/cli/src/index.ts"],
+      "@moribashi/graphql": ["../../packages/graphql/src/index.ts"],
       "@moribashi/web": ["../../packages/web/src/index.ts"]
     }
   },

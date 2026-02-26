@@ -11,6 +11,7 @@
     "@moribashi/core": "workspace:*",
     "@moribashi/cli": "workspace:*",
     "@moribashi/pg": "workspace:*",
+    "@moribashi/graphql": "workspace:*",
     "@moribashi/web": "workspace:*"
   },
   "devDependencies": {

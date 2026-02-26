@@ -22,11 +22,13 @@ export interface MoribashiPlugin {
   register(app: MoribashiApp): void | Promise<void>;
 }
 
-export interface MoribashiScope {
+export interface MoribashiScope<Cradle extends object = object> {
+  resolve<K extends keyof Cradle & string>(name: K): Cradle[K];
   resolve<T>(name: string): T;
-  register(services: Record<string, new (...args: any[]) => any>): MoribashiScope;
+  readonly cradle: Cradle;
+  register(services: Record<string, new (...args: any[]) => any>): MoribashiScope<Cradle>;
   dispose(): Promise<void>;
-  container: AwilixContainer;
+  container: AwilixContainer<Cradle>;
 }
 
 export interface MoribashiApp {
@@ -35,7 +37,7 @@ export interface MoribashiApp {
   scan(patterns: string[], opts?: ScanOptions): Promise<MoribashiApp>;
   use(plugin: MoribashiPlugin): MoribashiApp;
   registerInScope(scopeKey: symbol, services: Record<string, new (...args: any[]) => any>): MoribashiApp;
-  createScope(scopeKey?: symbol): MoribashiScope;
+  createScope<ScopeCradle extends object = object>(scopeKey?: symbol): MoribashiScope<ScopeCradle>;
   start(): Promise<void>;
   stop(): Promise<void>;
   container: AwilixContainer;
@@ -49,14 +51,17 @@ export function createApp(): MoribashiApp {
 
   const pendingRegistrations: Promise<void>[] = [];
   const scopeRegistrations = new Map<symbol, Array<[string, Resolver<unknown>]>>();
-  const activeScopes = new Set<MoribashiScope>();
+  const activeScopes = new Set<MoribashiScope<any>>();
   const initializedServices: Array<{ name: string; instance: unknown }> = [];
   let started = false;
 
-  function createMoribashiScope(awilixScope: AwilixContainer): MoribashiScope {
-    const scope: MoribashiScope = {
-      resolve<T>(name: string): T {
-        return awilixScope.resolve<T>(name);
+  function createMoribashiScope<Cradle extends object = object>(awilixScope: AwilixContainer<Cradle>): MoribashiScope<Cradle> {
+    const scope: MoribashiScope<Cradle> = {
+      resolve(name: string): any {
+        return awilixScope.resolve(name);
+      },
+      get cradle() {
+        return awilixScope.cradle;
       },
       register(services) {
         for (const [name, ctor] of Object.entries(services)) {
@@ -71,13 +76,13 @@ export function createApp(): MoribashiApp {
             await entry.value.onDestroy();
           }
         }
-        activeScopes.delete(scope);
+        activeScopes.delete(scope as MoribashiScope<any>);
         await awilixScope.dispose();
       },
       container: awilixScope,
     };
 
-    activeScopes.add(scope);
+    activeScopes.add(scope as MoribashiScope<any>);
     return scope;
   }
 
@@ -121,8 +126,8 @@ export function createApp(): MoribashiApp {
       }
       return app;
     },
-    createScope(scopeKey?) {
-      const awilixScope = container.createScope();
+    createScope<ScopeCradle extends object = object>(scopeKey?: symbol) {
+      const awilixScope = container.createScope<ScopeCradle>();
 
       if (scopeKey) {
         const entries = scopeRegistrations.get(scopeKey);
@@ -133,7 +138,7 @@ export function createApp(): MoribashiApp {
         }
       }
 
-      return createMoribashiScope(awilixScope);
+      return createMoribashiScope<ScopeCradle>(awilixScope);
     },
     async start() {
       if (started) throw new Error('App already started');

@@ -73,6 +73,9 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Set package versions from tag
+        run: pnpm -r exec npm version "${{ github.ref_name }}" --no-git-tag-version --allow-same-version
+
       - name: Build all packages
         run: pnpm run build
 
