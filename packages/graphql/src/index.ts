@@ -31,9 +31,24 @@ export interface GraphQLPluginOptions<Cradle extends object = object> {
   graphiql?: boolean;
 }
 
-// --- Resolver wrapping ---
+// --- Resolver binding ---
 
-function wrapResolvers<Cradle extends object>(
+/**
+ * Wraps a `ResolverMap<Cradle>` so each resolver's `this` is bound to the
+ * request scope's cradle. Use this when wiring up Mercurius variants
+ * (e.g. `@mercuriusjs/federation`) manually instead of via `graphqlPlugin()`.
+ *
+ * Pair with `scopeContext` to thread the scope through Mercurius context:
+ *
+ * ```ts
+ * fastify.register(federation, {
+ *   schema,
+ *   resolvers: bindResolvers(resolvers),
+ *   context: scopeContext,
+ * });
+ * ```
+ */
+export function bindResolvers<Cradle extends object>(
   resolvers: ResolverMap<Cradle>,
 ): Record<string, Record<string, Function>> {
   const wrapped: Record<string, Record<string, Function>> = {};
@@ -55,6 +70,29 @@ function wrapResolvers<Cradle extends object>(
   return wrapped;
 }
 
+/**
+ * Mercurius `context` function that extracts the per-request scope set by
+ * `@moribashi/web`. Pass this to Mercurius (or federation) `context` option
+ * alongside `bindResolvers`:
+ *
+ * ```ts
+ * fastify.register(federation, {
+ *   schema,
+ *   resolvers: bindResolvers(resolvers),
+ *   context: scopeContext,
+ * });
+ * ```
+ */
+export async function scopeContext(request: any): Promise<{ scope: MoribashiScope }> {
+  const scope = request.scope as MoribashiScope | undefined;
+  if (!scope) {
+    throw new Error(
+      '@moribashi/graphql requires @moribashi/web to be registered first',
+    );
+  }
+  return { scope };
+}
+
 // --- Plugin factory ---
 
 export function graphqlPlugin<Cradle extends object>(
@@ -64,23 +102,13 @@ export function graphqlPlugin<Cradle extends object>(
     name: '@moribashi/graphql',
     register(app: MoribashiApp) {
       const fastify = app.resolve<FastifyInstance>('fastify');
-      const wrappedResolvers = wrapResolvers(opts.resolvers);
-
       const graphiql = opts.graphiql ?? false;
 
       fastify.register(mercurius, {
         schema: opts.schema,
-        resolvers: wrappedResolvers as any,
+        resolvers: bindResolvers(opts.resolvers) as any,
         graphiql,
-        context: async (request: any) => {
-          const scope = request.scope as MoribashiScope<Cradle> | undefined;
-          if (!scope) {
-            throw new Error(
-              '@moribashi/graphql requires @moribashi/web to be registered first',
-            );
-          }
-          return { scope };
-        },
+        context: scopeContext,
       });
 
       // Redirect browser GET /graphql to /graphiql so the IDE is served at the main endpoint
