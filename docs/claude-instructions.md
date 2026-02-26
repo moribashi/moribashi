@@ -367,6 +367,27 @@ Options:
 - `resolvers` — `ResolverMap<Cradle>` with `this`-bound resolvers
 - `graphiql` — Serve GraphiQL IDE (default: `false`). When enabled, browser requests to `GET /graphql` redirect to `/graphiql`.
 
+#### Using with Mercurius Federation
+
+If you use `@mercuriusjs/federation` (or any other Mercurius variant) instead of plain Mercurius, you can't use `graphqlPlugin()` directly. Instead, use the exported `bindResolvers` and `scopeContext` helpers to get the same `this`-binding behavior:
+
+```ts
+import { bindResolvers, scopeContext } from '@moribashi/graphql';
+import federation from '@mercuriusjs/federation';
+
+fastify.register(federation, {
+  schema: typeDefs,
+  resolvers: bindResolvers(resolvers),
+  context: scopeContext,
+  graphiql: true,
+});
+```
+
+- `bindResolvers(resolvers)` — wraps each resolver so `this` is bound to the request scope's cradle (same wrapping `graphqlPlugin` does internally)
+- `scopeContext` — Mercurius `context` function that extracts `request.scope` (set by `@moribashi/web`) and passes it through to resolvers
+
+Your resolvers and `RequestCradle` interface are written the same way regardless of whether you use `graphqlPlugin()` or manual federation wiring.
+
 ### Typical Project Structure (Phase 2)
 
 Adds a `graphql/` directory alongside existing domain modules:
@@ -389,6 +410,12 @@ data/
   migrations/
     V1.0.0__create_tables.sql
 ```
+
+### Scaling to Larger APIs
+
+The flat schema shown above works well for small-to-medium APIs. For larger applications with many domain areas, consider the **namespaced domain pattern** — a convention where each domain gets its own namespace type (e.g. `Query.iam`, `Query.billing`) and operations nest underneath. This keeps the root query/mutation types clean and makes the schema self-documenting.
+
+See [Namespaced Domain Pattern for GraphQL](./graphql-namespace-pattern.md) for the full convention, naming rules, and resolver structure.
 
 ---
 
