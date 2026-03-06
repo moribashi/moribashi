@@ -62,6 +62,7 @@ export function graphqlPlugin<Cradle extends object>(
 ): MoribashiPlugin {
   return {
     name: '@moribashi/graphql',
+    dependencies: ['@moribashi/web'],
     register(app: MoribashiApp) {
       const fastify = app.resolve<FastifyInstance>('fastify');
       const wrappedResolvers = wrapResolvers(opts.resolvers);

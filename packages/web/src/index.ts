@@ -87,11 +87,13 @@ export function webPlugin(opts?: WebPluginOptions): MoribashiPlugin {
       // Dispose request scope after response
       fastify.addHook('onResponse', async (request: FastifyRequest) => {
         await request.scope?.dispose();
+        request.scope = undefined as unknown as MoribashiScope;
       });
 
       // Dispose on aborted requests too
       fastify.addHook('onRequestAbort', async (request: FastifyRequest) => {
         await request.scope?.dispose();
+        request.scope = undefined as unknown as MoribashiScope;
       });
     },
   };

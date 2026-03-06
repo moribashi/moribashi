@@ -1,20 +1,42 @@
 # Progress
 
 ## Current Milestone
-Foundation complete — DI container with composable scopes, lifecycle hooks, and plugin system.
+Post-review hardening complete — correctness, safety, testing, and API improvements applied across all phases.
 
-## Recently Completed
-- Fixed TS6059 errors by removing redundant `rootDir`/`outDir` from `tsconfig.base.json` (packages set their own)
-- Added lifecycle interfaces (`OnInit`, `OnDestroy`) to `@moribashi/common`
-- Added plugin system (`MoribashiPlugin`, `app.use()`), composable scopes (`app.createScope(key?)`), and lifecycle management (`app.start()`/`app.stop()`) to `@moribashi/core`
-- Named scopes via `Symbol.for()` — `app.registerInScope(key, services)` + `app.createScope(key)`
-- Re-exported Awilix utilities (`asClass`, `asFunction`, `asValue`, `Lifetime`) from core
-- Updated example with lifecycle hooks on `BooksService`
-- IDE click-through works via `paths` mappings in `examples/simple/tsconfig.json`
+## Recently Completed (4-Phase Review & Fix Cycle)
+
+### Phase 1: Correctness
+- Fixed lifecycle error handling: `start()` rollback cleans up on failure, `stop()` collects errors via AggregateError
+- Fixed `start()`/`stop()` race conditions with `starting`/`stopping` flags
+- Made `MoribashiScope.dispose()` idempotent via `disposed` flag
+- Fixed `activeScopes` mutation during iteration (snapshot before iterating)
+- Fixed web plugin double-dispose (nullify `request.scope` after dispose)
+- Fixed `pgPlugin` knex pool leak (disposer on knex registration, removed `Db.onDestroy`)
+- Added migration failure cleanup (destroy knex before re-throwing)
+
+### Phase 2: Safety
+- Added service name validation (regex + dangerous names denylist) in `register()`, `scope.register()`, `registerInScope()`
+- Added overwrite warnings via `console.warn` for duplicate registrations
+- Added async plugin registration error context wrapping
+- Added path traversal protection in `SqlMigrationSource.getMigration()`
+- Added malformed migration filename NaN validation in `parseVersion()`
+
+### Phase 3: Testing
+- Created 49 unit tests for `@moribashi/core` (lifecycle, plugins, scopes, validation, error handling)
+- Created 11 unit tests for `@moribashi/web` (request scope lifecycle, WebServer lifecycle)
+- All 60 tests passing
+
+### Phase 4: API & DX
+- Added `registerValue()` and `registerFactory()` methods to `MoribashiApp`
+- Added `registerValue()` to `MoribashiScope`
+- Added plugin dependency validation (`dependencies?: string[]` on `MoribashiPlugin`)
+- Added duplicate plugin registration warnings
 
 ## Next Steps
-- Build concrete scope plugins (WebContext via `@moribashi/web`, EventContext for Kafka)
-- Add scoped service lifecycle hooks (onInit/onDestroy within scopes)
-- Build a real plugin (e.g., `@moribashi/postgres`) to validate the plugin contract
-- Add tests
-- Middleware/interceptor support
+- Add README and getting-started documentation
+- Add GraphQL hardening options (query depth limits, introspection control)
+- Add `Cradle` generic to `MoribashiApp` for typed container resolution
+- Fix `scan()` for production builds (.ts vs .js extension handling)
+- Add interceptor/middleware support for cross-cutting concerns
+- Add testing utilities (mocking, overrides, test containers)
+- Add configuration management plugin

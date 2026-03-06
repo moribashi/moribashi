@@ -15,7 +15,11 @@ export type KnexMigrationSource = Knex.MigrationSource<string>;
  */
 function parseVersion(filename: string): number[] {
   const versionStr = filename.split('__')[0].substring(1); // strip leading "V"
-  return versionStr.split('.').map(Number);
+  const parts = versionStr.split('.').map(Number);
+  if (parts.some(Number.isNaN)) {
+    throw new Error(`Invalid migration filename: ${filename}`);
+  }
+  return parts;
 }
 
 function compareVersions(a: number[], b: number[]): number {
@@ -62,7 +66,12 @@ export class SqlMigrationSource implements KnexMigrationSource {
   }
 
   async getMigration(file: string): Promise<Knex.Migration> {
-    const sql = await fs.readFile(path.join(this.dir, file), 'utf-8');
+    const resolvedDir = path.resolve(this.dir);
+    const fullPath = path.resolve(this.dir, file);
+    if (!fullPath.startsWith(resolvedDir + '/')) {
+      throw new Error('Invalid migration file path');
+    }
+    const sql = await fs.readFile(fullPath, 'utf-8');
     this.log.debug({ dir: this.dir, file, sql }, 'Loaded migration')
 
     return {

@@ -59,7 +59,7 @@ describe('pgPlugin', () => {
     expect(db.knex).toBe(knex);
   });
 
-  it('cleans up the connection pool on app.stop() via onDestroy', async () => {
+  it('cleans up the connection pool on app.stop() via knex disposer', async () => {
     app = createApp();
     app.use(pgPlugin(pgOpts));
     await app.start();
