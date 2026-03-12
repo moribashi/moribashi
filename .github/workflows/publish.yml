@@ -82,10 +82,10 @@ jobs:
         run: |
           VERSION="${{ github.event.inputs.version || github.ref_name }}"
           echo "Publishing version: $VERSION"
-          pnpm -r exec npm version "$VERSION" --no-git-tag-version --allow-same-version
+          pnpm -r --filter './packages/**' exec npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       - name: Build all packages
         run: pnpm run build
 
       - name: Publish to npmjs
-        run: pnpm -r exec npm publish --provenance --access public
+        run: pnpm -r --filter './packages/**' exec npm publish --provenance --access public
