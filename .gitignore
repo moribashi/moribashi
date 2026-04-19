@@ -8,6 +8,9 @@ dist/
 # Test output
 coverage/
 
+# Generated API docs
+docs/api/
+
 # OS
 .DS_Store
 

@@ -3,6 +3,10 @@ import type { Knex } from 'knex';
 import { createKnex, type PgConfig } from './knex.js';
 import { type Logger, SqlMigrationSource } from './migrator.js';
 
+/**
+ * Options for {@link fastifyKnex}. Extends {@link PgConfig} with the
+ * decorator name and an optional migrations directory.
+ */
 export interface KnexPluginOptions extends PgConfig {
   /** Decorator name on the Fastify instance. Defaults to `'knex'`. */
   decoratorId?: string;
@@ -22,6 +26,23 @@ async function runMigrations(dir: string, log: Logger, knex: Knex) {
  * Fastify server. Optionally runs SQL migrations on server ready.
  *
  * Cleans up the connection pool on server close.
+ *
+ * Most Moribashi apps should prefer {@link pgPlugin}, which registers `knex`
+ * and `db` into the core DI container. Use `fastifyKnex` when you're running
+ * Fastify without the Moribashi container.
+ *
+ * @example
+ * ```ts
+ * import Fastify from 'fastify';
+ * import { fastifyKnex } from '@moribashi/pg';
+ *
+ * const app = Fastify();
+ * await app.register(fastifyKnex, {
+ *   connectionString: process.env.DATABASE_URL,
+ *   migrationsDir: './data/migrations',
+ * });
+ * // app.knex is now available
+ * ```
  */
 export const fastifyKnex = fp<KnexPluginOptions>(
   async (fastify, opts) => {

@@ -9,6 +9,12 @@ import { Db } from './db.js';
 import { createKnex, type PgConfig } from './knex.js';
 import { SqlMigrationSource } from './migrator.js';
 
+/**
+ * Options for {@link pgPlugin}. Extends {@link PgConfig} with Moribashi-specific
+ * knobs like automatic migration on startup.
+ *
+ * @public
+ */
 export interface PgPluginOptions extends PgConfig {
   /** Path to SQL migrations directory. If set, migrations run during plugin registration. */
   migrationsDir?: string;
@@ -26,6 +32,26 @@ export interface PgPluginOptions extends PgConfig {
  *
  * `db` is registered as a singleton so the core lifecycle calls its
  * `onDestroy` to clean up the connection pool on `app.stop()`.
+ *
+ * @param opts - Connection config plus optional `migrationsDir`.
+ * @returns A `MoribashiPlugin` to pass to `app.use()`.
+ *
+ * @example
+ * ```ts
+ * import { createApp } from '@moribashi/core';
+ * import { pgPlugin } from '@moribashi/pg';
+ *
+ * const app = createApp();
+ * app.use(
+ *   pgPlugin({
+ *     connectionString: process.env.DATABASE_URL,
+ *     migrationsDir: './data/migrations',
+ *   }),
+ * );
+ * await app.start();
+ * ```
+ *
+ * @public
  */
 export function pgPlugin(opts: PgPluginOptions): MoribashiPlugin {
   const { migrationsDir, ...pgConfig } = opts;

@@ -35,6 +35,18 @@ jobs:
       - name: Type-check
         run: pnpm run typecheck
 
+      - name: Generate API docs (TypeDoc)
+        run: pnpm run docs:api
+
+      - name: Upload API docs artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-docs
+          path: docs/api/
+          if-no-files-found: ignore
+          retention-days: 14
+
   test:
     name: Tests
     runs-on: ubuntu-latest

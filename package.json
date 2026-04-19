@@ -15,12 +15,15 @@
     "ci:check": "biome ci",
     "typecheck": "pnpm -r --workspace-concurrency=1 --filter='./packages/**' --filter='./examples/**' exec tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "docs:api": "typedoc",
+    "docs:api:watch": "typedoc --watch"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.4",
     "@vitest/coverage-v8": "^4.1.4",
     "tsup": "^8.5.0",
+    "typedoc": "^0.28.19",
     "typescript": "^5.7.0",
     "vitest": "^4.1.4"
   },
