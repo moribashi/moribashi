@@ -1,5 +1,5 @@
 {
-  "name": "@moribashi/example-simple",
+  "name": "@examples/error-handling",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -8,12 +8,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@moribashi/cli": "workspace:*",
     "@moribashi/common": "workspace:*",
-    "@moribashi/core": "workspace:*",
-    "@moribashi/graphql": "workspace:*",
-    "@moribashi/pg": "workspace:*",
-    "@moribashi/web": "workspace:*"
+    "@moribashi/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^25.3.0",

@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "noEmit": true,
+    "paths": {
+      "@moribashi/common": ["../../packages/common/src/index.ts"],
+      "@moribashi/core": ["../../packages/core/src/index.ts"],
+      "@moribashi/web": ["../../packages/web/src/index.ts"]
+    }
+  },
+  "include": ["src"]
+}
