@@ -12,8 +12,19 @@ services:
     # ports:
     #   - 6330:6330
     volumes:
-      # - /var/run/docker.sock:/var/run/docker.sock
       - ../:/workspace:rw
+
+      - ~/.ssh:/home/node/.ssh:ro
+      - ~/.gitconfig:/home/node/.gitconfig:ro
+
+      ### Dev container gets access to host docker
+      - /var/run/docker.sock:/var/run/docker.sock
+
+      ### Credential persistence across restarts
+      - ~/.devcontainers/mount/oss/secrets:/home/node/.secrets
+      - ~/.devcontainers/mount/oss/claude:/home/node/.claude
+      - ~/.devcontainers/mount/oss/claude.json:/home/node/.claude.json
+      - ~/.config/gh:/home/node/.config/gh
       
   postgres:
     image: postgres:16-alpine

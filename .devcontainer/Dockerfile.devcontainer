@@ -1,26 +1,41 @@
 FROM mcr.microsoft.com/devcontainers/javascript-node:dev-24
 
 RUN apt-get update \
-  && apt-get install -y \
-  docker.io \
+  && apt-get install -y --no-install-recommends \
   postgresql-client \
   direnv \
-  && rm -rf /var/lib/apt/lists/* \
-  && curl --proto '=https' --tlsv1.2 -fsSL https://get.opentofu.org/install-opentofu.sh | sh -s -- --install-method standalone \
-  && echo 'eval "$(direnv hook bash)"' >> ~/.bashrc 
+  awscli \
+  kubectl \
+  && rm -rf /var/lib/apt/lists/*
 
-USER root
+RUN curl --proto '=https' --tlsv1.2 -fsSL https://get.opentofu.org/install-opentofu.sh | sh -s -- --install-method standalone
 
-RUN mkdir -p /workspace && chown -R node:node /workspace
-RUN mkdir -p /home/node/.vscode-server/data/Machine \
-             /home/node/.vscode-server/data/User \
-             /home/node/.vscode-server/bin \
-  && chown -R node:node /home/node/.vscode-server
+RUN TGRUNT_VERSION=0.77.17 \
+  && ARCH=$(dpkg --print-architecture) \
+  && curl -fsSL "https://github.com/gruntwork-io/terragrunt/releases/download/v${TGRUNT_VERSION}/terragrunt_linux_${ARCH}" -o /usr/local/bin/terragrunt \
+  && chmod +x /usr/local/bin/terragrunt
 
-USER node
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+  && apt-get update && apt-get install -y --no-install-recommends gh && rm -rf /var/lib/apt/lists/*
+
+RUN echo 'eval "$(direnv hook bash)"' >> /home/node/.bashrc
+
+RUN STERN_VERSION=1.32.0 \
+  && curl -fsSL https://github.com/stern/stern/releases/download/v${STERN_VERSION}/stern_${STERN_VERSION}_linux_amd64.tar.gz \
+  | tar -xz -C /usr/local/bin/ stern
 
 RUN npm install -g @anthropic-ai/claude-code
 
+# docker CLI + compose v2 + host-socket permission reconciliation are provided
+# by the docker-outside-of-docker devcontainer feature (see devcontainer.json),
+# not installed here -- the feature aligns the in-container docker group GID to
+# the bind-mounted host socket, which a manual `usermod -aG docker` cannot do.
+
+RUN mkdir -p /workspace && chown node:node /workspace
+
+USER node
+
 WORKDIR /workspace
 
-CMD [ "node", "src/main.ts" ]
+CMD [ "sleep", "infinity" ]
