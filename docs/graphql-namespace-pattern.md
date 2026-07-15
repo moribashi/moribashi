@@ -12,7 +12,7 @@ As a GraphQL API grows, flat root fields create problems:
 - **Hard to navigate** — new developers struggle to find operations in a large schema
 - **Naming pressure** — generic names like `search` or `create` must be made unique (e.g. `searchUsers`, `createOrder`)
 
-The namespaced domain pattern solves these by giving each domain area a single root entry point (e.g. `Query.iam`, `Mutation.iam`) and nesting resource operations underneath. If you later adopt federation, each namespace maps cleanly to a subgraph, avoiding cross-subgraph name collisions.
+The namespaced domain pattern solves these by giving each domain area a single root entry point (e.g. `Query.iam`, `Mutation.iam`) and nesting resource operations underneath. If your app is (or becomes) a federation subgraph via `graphqlPlugin({ federated: true })` — see [Phase 3 — Federation](./claude-instructions.md#phase-3--federation) — each namespace maps cleanly to a subgraph, avoiding cross-subgraph name collisions.
 
 ```graphql
 # instead of this
@@ -273,7 +273,11 @@ export const resolvers: ResolverMap<RequestCradle> = {
 
 ## Federation Considerations
 
-If you compose your Moribashi app into an Apollo Federation subgraph, apply these additional conventions on top of the base pattern above.
+If your app runs with `graphqlPlugin({ ..., federated: true })` (see
+[Phase 3 — Federation](./claude-instructions.md#phase-3--federation)), apply these additional
+conventions on top of the base pattern above. They only matter once two or more subgraphs need to share
+an entity type — the field-only case (each subgraph just contributing its own namespace) needs nothing
+beyond `extend type Query` / `extend type Mutation` below.
 
 ### Use `extend type Query` / `extend type Mutation`
 
@@ -366,7 +370,9 @@ To add a new domain namespace (e.g. `billing`) following this pattern:
    ```
 5. **Wire resolvers**: namespace pass-throughs return `{}`, leaf resolvers delegate to services
 
-> When your app has multiple namespace modules, combine their root fields into a single `type Query` / `type Mutation` definition in your schema SDL.
+> When your app has multiple namespace modules, combine their root fields into a single root type
+> definition in your schema SDL — `type Query` / `type Mutation` for a standalone app, or
+> `extend type Query` / `extend type Mutation` if it's a federation subgraph (`federated: true`).
 
 The client query reads naturally:
 

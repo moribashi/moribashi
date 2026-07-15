@@ -11,6 +11,7 @@ Lightweight TypeScript dependency injection framework built on [Awilix](https://
 | `@moribashi/cli` | CLI integration |
 | `@moribashi/web` | Fastify web server integration with per-request scopes |
 | `@moribashi/pg` | PostgreSQL integration via Knex with migrations, camelCase query helper, and convention-based repositories |
+| `@moribashi/graphql` | GraphQL via Mercurius — standalone or as a federation subgraph (`federated: true`), plus `gatewayPlugin()` for composing subgraphs into a supergraph |
 
 ## Installation
 
@@ -95,6 +96,24 @@ class UsersRepo {
 ```
 
 SQL migrations use the Flyway naming convention: `V1.0.0__description.sql`.
+
+### `@moribashi/graphql`
+
+Wraps Mercurius, with resolvers `this`-bound to the request scope's cradle:
+
+```ts
+import { graphqlPlugin } from '@moribashi/graphql';
+
+app.use(graphqlPlugin({ schema, resolvers, graphiql: true }));
+```
+
+Add `federated: true` to make it a federation subgraph composable by a gateway — same options, SDL
+switches from `type Query` to `extend type Query`. `gatewayPlugin()` composes a list of subgraphs into
+one public schema, as a first-class Moribashi app in its own right. See
+[`examples/platform`](./examples/platform) for a complete runnable reference (a gateway + two
+subgraphs) and [`docs/claude-instructions.md`](./docs/claude-instructions.md#phase-3--federation) for
+the full pattern — this is the recommended default shape for any service that might eventually share a
+graph with others.
 
 #### SQL-file Repositories
 
