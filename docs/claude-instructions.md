@@ -427,15 +427,32 @@ Options:
 - `resolvers` — `ResolverMap<Cradle>` with `this`-bound resolvers
 - `graphiql` — Serve GraphiQL IDE (default: `false`). When enabled, browser requests to `GET /graphql` redirect to `/graphiql`.
 
-#### Using with Mercurius Federation
+#### Federation
 
-If you use `@mercuriusjs/federation` (or any other Mercurius variant) instead of plain Mercurius, you can't use `graphqlPlugin()` directly. Instead, use the exported `bindResolvers` and `scopeContext` helpers to get the same `this`-binding behavior:
+To make this schema a federation subgraph — composable by a gateway alongside other services' schemas —
+pass `federated: true`:
+
+```ts
+app.use(graphqlPlugin({ schema, resolvers, graphiql: true, federated: true }));
+```
+
+Same options, same `this`-bound resolvers; the only other change is your SDL's root types switch from
+`type Query` / `type Mutation` to `extend type Query` / `extend type Mutation`. See
+[Phase 3 — Federation](#phase-3--federation) below for the full picture, including building the gateway
+itself and adding new subgraphs.
+
+`federated` defaults to `false` for now (see [issue #4](https://github.com/moribashi/moribashi/issues/4)
+for the plan to flip that default).
+
+**Manual wiring escape hatch:** if you need a Mercurius variant `graphqlPlugin()` doesn't cover (e.g.
+you're hand-rolling something `federated: true` / `gatewayPlugin()` don't fit), the exported
+`bindResolvers` and `scopeContext` helpers give you the same `this`-binding behavior directly:
 
 ```ts
 import { bindResolvers, scopeContext } from '@moribashi/graphql';
-import federation from '@mercuriusjs/federation';
+import someMercuriusVariant from 'some-mercurius-variant';
 
-fastify.register(federation, {
+fastify.register(someMercuriusVariant, {
   schema: typeDefs,
   resolvers: bindResolvers(resolvers),
   context: scopeContext,
@@ -443,10 +460,8 @@ fastify.register(federation, {
 });
 ```
 
-- `bindResolvers(resolvers)` — wraps each resolver so `this` is bound to the request scope's cradle (same wrapping `graphqlPlugin` does internally)
-- `scopeContext` — Mercurius `context` function that extracts `request.scope` (set by `@moribashi/web`) and passes it through to resolvers
-
-Your resolvers and `RequestCradle` interface are written the same way regardless of whether you use `graphqlPlugin()` or manual federation wiring.
+Your resolvers and `RequestCradle` interface are written the same way regardless of which of these three
+paths you use.
 
 ### Typical Project Structure (Phase 2)
 
@@ -476,6 +491,109 @@ data/
 The flat schema shown above works well for small-to-medium APIs. For larger applications with many domain areas, consider the **namespaced domain pattern** — a convention where each domain gets its own namespace type (e.g. `Query.iam`, `Query.billing`) and operations nest underneath. This keeps the root query/mutation types clean and makes the schema self-documenting.
 
 See [Namespaced Domain Pattern for GraphQL](./graphql-namespace-pattern.md) for the full convention, naming rules, and resolver structure.
+
+---
+
+## Phase 3 — Federation
+
+**Prerequisites:** Phase 2 complete (typed scopes and `@moribashi/graphql` working).
+
+By default, a Moribashi GraphQL app is a standalone schema. Phase 3 turns it into a **federation
+subgraph** — one team's slice of schema, composed with every other team's slice into a single public
+graph by a **gateway**. This is the recommended shape for any service that might eventually need to
+share a graph with others, which in practice is most of them — see
+[`federation-first-design.md`](./federation-first-design.md) for the full rationale.
+
+`examples/platform` (at the repo root) is a complete, runnable reference: a gateway composing two
+subgraphs. Read it alongside this section.
+
+### Making a subgraph
+
+Add `federated: true` to `graphqlPlugin()` and switch your root types from `type` to `extend type`:
+
+```ts
+app.use(graphqlPlugin({ schema, resolvers, graphiql: true, federated: true }));
+```
+
+```graphql
+# before (standalone)
+type Query {
+  users: [User!]!
+}
+
+# after (federated subgraph)
+extend type Query {
+  users: [User!]!
+}
+```
+
+That's the entire delta — same `schema` / `resolvers` / `graphiql` options, same `this`-bound resolvers
+via the scope cradle. A federated subgraph is still a fully valid, independently queryable GraphQL
+server on its own; the only difference is it also exposes a `_service { sdl }` field a gateway uses to
+discover and compose it. Running it standalone (no gateway present — e.g. local dev) works exactly like
+before.
+
+### Building the gateway
+
+`gatewayPlugin()` composes a list of subgraphs into one public schema. Like `graphqlPlugin()`, it's an
+ordinary Moribashi app — DI, lifecycle, and the plugin system all apply to it too, not just to
+subgraphs:
+
+```ts
+import { createApp } from '@moribashi/core';
+import { gatewayPlugin } from '@moribashi/graphql';
+import { webPlugin } from '@moribashi/web';
+
+const app = createApp();
+
+app.use(webPlugin({ port: 4000 }));
+app.use(gatewayPlugin({
+  graphiql: true,
+  subgraphs: [
+    { name: 'identity', url: 'http://localhost:4001/graphql' },
+    { name: 'catalog', url: 'http://localhost:4002/graphql' },
+  ],
+}));
+
+await app.start();
+```
+
+Subgraphs are non-mandatory by default (`mandatory: false`) — the gateway starts even if one isn't
+reachable yet, and re-polls (`pollingInterval`, default 10s) to pick it up later. If literally none of
+the subgraphs are reachable at boot, registration fails and the process exits; recovering from that is
+left to your process supervisor (e.g. Kubernetes restarting the pod) rather than an in-process retry
+loop, since retrying a Fastify instance whose boot has already failed isn't a safe operation.
+
+### The recommended shape: a core platform monorepo
+
+Put your gateway and your team's own "backbone" subgraphs in one pnpm monorepo — that's exactly what
+`examples/platform` demonstrates (`gateway/`, plus a subgraph per core domain). As more domains come
+online, each new one gets its own repo instead (below), so no single repo grows without bound.
+
+### Adding a new team-owned subgraph
+
+Once a gateway and at least one subgraph exist, adding another domain is meant to be routine:
+
+1. **New repo, new Moribashi app.** Scaffold it the same way as any Phase 1/2 app —
+   `webPlugin()` + `graphqlPlugin({ ..., federated: true })`. It doesn't need to know about the gateway
+   or any other subgraph; it only owns its own slice of schema.
+2. **Deploy it however your platform deploys services.** This is deliberately outside Moribashi's scope
+   — see [issue #3](https://github.com/moribashi/moribashi/issues/3) for the open question of whether
+   deploy/discovery conventions get standardized later.
+3. **Register it with the gateway.** Add `{ name, url }` to the gateway's `subgraphs` list (wherever
+   that config lives in your deployment) and let it restart or pick it up on its next poll. Today this
+   is a manual step — there's no automatic discovery yet.
+
+No changes to the gateway's code, no changes to any other subgraph, no shared schema file to merge —
+each subgraph's SDL and resolvers stay entirely within its own repo.
+
+### Shared entities across subgraphs
+
+Two subgraphs contributing fields to the *same* logical type (a `User` owned by one service and
+extended by another) needs `@key` directives and `__resolveReference` resolvers — see
+[Federation Considerations](./graphql-namespace-pattern.md#federation-considerations) in the namespace
+pattern doc. This is a materially harder problem than the field-only case above; reach for it once a
+real cross-service entity need exists, not speculatively.
 
 ---
 
