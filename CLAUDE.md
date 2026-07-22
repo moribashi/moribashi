@@ -8,6 +8,7 @@ Lightweight TypeScript DI framework built on Awilix, with composable scopes, lif
 packages/
   common/   - Shared interfaces (OnInit, OnDestroy, type guards)
   core/     - DI container, plugin system, scopes, lifecycle (depends on common + awilix)
+  auth/     - OIDC bearer validation, Principal/SecurityService in request scope, k8s workload identity (depends on core + web + jose)
   cli/      - CLI integration (depends on core)
   graphql/  - GraphQL integration via Mercurius (depends on core, peer: fastify)
   pg/       - PostgreSQL via Knex: Db query helper, Repo/RepoQuery pattern, migrations
@@ -16,7 +17,7 @@ examples/
   simple/   - Demo app showing container usage with lifecycle hooks + GraphQL
 ```
 
-Packages have a dependency order: common → core → {cli, graphql, pg, web}. Always build in this order.
+Packages have a dependency order: common → core → {cli, graphql, pg, web} → auth. Always build in this order.
 
 ## Commands
 
@@ -57,6 +58,7 @@ After modifying `packages/common/src`, rebuild it before type-checking core (cor
 - `MoribashiScope<Cradle>` is generic — the `Cradle` type param declares what's in the scope
 - `scope.cradle` exposes the Awilix proxy; property access lazily resolves services
 - `@moribashi/graphql` wraps resolvers so `this` is the scope cradle (services resolve lazily via `this.serviceName`)
+- `@moribashi/auth` registers `principal`/`securityService`/`authError` into the web request scope via an `onRequest` hook (after `webPlugin`); verification failures are captured into the scope, never rejected at the hook — they surface from `ensure*` calls with the true cause
 
 ## Session State
 
