@@ -12,11 +12,12 @@ packages/
   graphql/  - GraphQL integration via Mercurius (depends on core, peer: fastify)
   pg/       - PostgreSQL via Knex: Db query helper, Repo/RepoQuery pattern, migrations
   web/      - Web integration (depends on core)
+  k8s/      - Kubernetes-native subgraph discovery for federation gateways (depends on common, core)
 examples/
   simple/   - Demo app showing container usage with lifecycle hooks + GraphQL
 ```
 
-Packages have a dependency order: common → core → {cli, graphql, pg, web}. Always build in this order.
+Packages have a dependency order: common → core → {cli, graphql, pg, web, k8s}. Always build in this order.
 
 ## Commands
 
