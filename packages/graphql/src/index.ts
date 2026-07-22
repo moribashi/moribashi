@@ -1,8 +1,9 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { MoribashiApp, MoribashiPlugin, MoribashiScope } from '@moribashi/core';
 import mercurius from 'mercurius';
 import { mercuriusFederationPlugin } from '@mercuriusjs/federation';
 import mercuriusGatewayPlugin from '@mercuriusjs/gateway';
+import { useSofa } from 'sofa-api';
 
 // --- Scope symbols ---
 
@@ -23,6 +24,38 @@ export type ResolverMap<Cradle extends object> = {
     [fieldName: string]: BoundResolver<Cradle>;
   };
 };
+
+// --- REST (sofa-api) options ---
+
+/** Per-operation route override, mirroring sofa-api's `RouteConfig`. */
+export interface RestRouteConfig {
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  path?: string;
+  responseStatus?: number;
+  tags?: string[];
+  description?: string;
+}
+
+export interface RestOptions {
+  /** Base path REST endpoints are mounted under. Default: '/api' */
+  basePath?: string;
+  /** OpenAPI document info. The spec is served at `${basePath}/openapi.json`. */
+  openApi?: {
+    title?: string;
+    description?: string;
+    version?: string;
+    /** Path of the spec relative to `basePath`, or false to disable. Default: '/openapi.json' */
+    endpoint?: string | false;
+  };
+  /** Serve Swagger UI at `${basePath}/docs`. Set false to disable. Default: true */
+  swaggerUi?: boolean | { endpoint?: string };
+  /** How deep sofa-api expands nested object fields when deriving queries. Default: sofa-api's default (1). */
+  depthLimit?: number;
+  /** Types/fields sofa-api should not treat as models, e.g. `["Book.author"]`. */
+  ignore?: string[];
+  /** Per-operation overrides keyed like `"Query.books"` / `"Mutation.addBook"`. */
+  routes?: Record<string, RestRouteConfig>;
+}
 
 // --- Plugin options ---
 
@@ -48,6 +81,19 @@ export interface GraphQLPluginOptions<Cradle extends object = object> {
    * https://github.com/moribashi/moribashi/issues/4
    */
   federated?: boolean;
+  /**
+   * Also expose every query/mutation as a REST endpoint (via sofa-api), with
+   * an always-in-sync OpenAPI spec and Swagger UI. Pass `true` for defaults
+   * (endpoints under `/api`, spec at `/api/openapi.json`, UI at `/api/docs`)
+   * or a `RestOptions` object to customize.
+   *
+   * REST requests run through the same Fastify instance, so they get the same
+   * per-request DI scope as GraphQL resolvers — `this.someService` works
+   * identically in both.
+   *
+   * Default: false
+   */
+  rest?: boolean | RestOptions;
 }
 
 // --- Resolver binding ---
@@ -131,9 +177,77 @@ export function graphqlPlugin<Cradle extends object>(
         context: scopeContext,
       });
 
+      if (opts.rest) {
+        mountRest(fastify, opts.rest === true ? {} : opts.rest);
+      }
+
       addGraphiqlRedirect(fastify, graphiql);
     },
   };
+}
+
+/**
+ * Mounts sofa-api on the app's Fastify instance, reusing the executable
+ * schema Mercurius built (so REST and GraphQL can never drift). Registered
+ * after Mercurius so `fastify.graphql.schema` is available when it runs.
+ */
+function mountRest(fastify: FastifyInstance, rest: RestOptions): void {
+  const basePath = rest.basePath ?? '/api';
+
+  fastify.register(async (instance) => {
+    const sofa = useSofa({
+      basePath,
+      schema: (instance as any).graphql.schema,
+      depthLimit: rest.depthLimit,
+      ignore: rest.ignore,
+      routes: rest.routes as any,
+      context: ((serverContext: { fastifyRequest: FastifyRequest }) =>
+        scopeContext(serverContext.fastifyRequest)) as any,
+      openAPI: {
+        info: {
+          title: rest.openApi?.title,
+          description: rest.openApi?.description,
+          version: rest.openApi?.version,
+        },
+        endpoint: rest.openApi?.endpoint,
+      } as any,
+      swaggerUI:
+        rest.swaggerUi === false
+          ? ({ endpoint: false } as any)
+          : typeof rest.swaggerUi === 'object'
+            ? rest.swaggerUi
+            : undefined,
+    });
+
+    // Sofa reads the request body itself (as a fetch Request), so keep
+    // Fastify from consuming/parsing it. Content-type parsers are
+    // encapsulated: this only affects routes registered in this context.
+    instance.removeAllContentTypeParsers();
+    instance.addContentTypeParser('*', (_req, payload, done) => {
+      done(null, payload);
+    });
+
+    instance.route({
+      url: `${basePath}/*`,
+      method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      handler: async (request: FastifyRequest, reply: FastifyReply) => {
+        const response: Response | undefined = await (sofa as any).handleNodeRequestAndResponse(
+          request,
+          reply,
+          { fastifyRequest: request },
+        );
+        if (!response) {
+          return reply.callNotFound();
+        }
+        response.headers.forEach((value, key) => {
+          reply.header(key, value);
+        });
+        reply.status(response.status);
+        reply.send(response.body);
+        return reply;
+      },
+    });
+  });
 }
 
 // --- Gateway ---
