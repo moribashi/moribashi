@@ -1,10 +1,13 @@
 # Progress
 
 ## Current Milestone
-Federation support (opt-in) — `@moribashi/graphql` can register a schema as an Apollo Federation v1
-subgraph and compose subgraphs via a new gateway plugin. Not yet the default (see Next Steps).
+Authentication — `@moribashi/auth` provides OIDC bearer validation (multi-issuer), a typed
+`Principal` + `SecurityService` in the request DI scope, and optional Kubernetes workload identity
+via RFC 8693 token exchange (GH #11).
 
 ## Recently Completed
+- Implemented `@moribashi/auth` (GH #11): `authPlugin` (issuer selection by unverified `iss`, JWKS via static set / direct URI / OIDC discovery, jose-backed verification), `AnonymousPrincipal`/`TokenPrincipal` union, captured-error model (`AuthError` taxonomy — hook never 401s; errors surface from `ensure*` with true cause), `SecurityService` with `AccessLoader` + shared TTL `AccessCache`, and `workloadIdentityPlugin` (`serviceToken` singleton: RFC 8693 exchange of projected SA tokens, refresh-ahead-of-expiry, file re-read on rotation)
+- 33 tests for auth: offline JWKS unit tests, cache TTL/isolation/failure tests, fake-token-endpoint workload-identity tests, and a full web+auth+graphql integration test (public + protected fields in one operation)
 - Fixed TS6059 errors by removing redundant `rootDir`/`outDir` from `tsconfig.base.json` (packages set their own)
 - Added lifecycle interfaces (`OnInit`, `OnDestroy`) to `@moribashi/common`
 - Added plugin system (`MoribashiPlugin`, `app.use()`), composable scopes (`app.createScope(key?)`), and lifecycle management (`app.start()`/`app.stop()`) to `@moribashi/core`
@@ -26,6 +29,7 @@ subgraph and compose subgraphs via a new gateway plugin. Not yet the default (se
 - Typed Fastify surface in `@moribashi/web`: `getFastify(app)` accessor, `WebCradle`/`WebRequestCradle` contracts, `request.scope` typed as `MoribashiScope<WebRequestCradle>`, and expanded Fastify type re-exports (hook handlers, plugin types, `RouteOptions`, etc.) so consumers never need `any` or manual `resolve<FastifyInstance>` generics
 
 ## Next Steps
+- Auth follow-ups deferred by GH #11: session/cookie auth, opaque-token introspection (RFC 7662), impersonation semantics (claim shape reserves `audit` vs `identity`), GraphQL schema directives
 - Flip `graphqlPlugin()`'s `federated` default to `true` in a future release (tracked: GH #4) — needs a consumer inventory first since it's a behavior change
 - Gateway subgraph discovery/composition automation — currently a manual step (edit the gateway's `subgraphs` list); deliberately deferred, tracked separately (GH #3, noted in GH #5's scope too)
 - Shared-entity (`@key` / `__resolveReference`) pattern is documented but unimplemented anywhere in this repo — design it once a real cross-subgraph entity need shows up, not speculatively

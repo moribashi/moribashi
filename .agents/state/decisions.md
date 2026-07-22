@@ -53,3 +53,21 @@
 - Demonstrates the recommended shape for a team's own platform: one pnpm monorepo containing the gateway + a handful of "core" subgraphs (here: `identity`, `catalog`) — each an ordinary Moribashi app in its own package under `examples/platform/`
 - Added `examples/platform/*` to the root `pnpm-workspace.yaml` glob (previously only `examples/*`, which wouldn't pick up nested per-service packages)
 - New team-owned subgraphs are meant to live in their own separate repos, not in this monorepo — see the "Adding a new team-owned subgraph" recipe in `docs/claude-instructions.md`. Deploy/discovery automation for that path is explicitly out of scope for `@moribashi/graphql` (tracked: GH #3)
+
+## Auth: capture verification errors, never reject at the hook
+- `authPlugin`'s `onRequest` hook always lets the request proceed: no header → anonymous; bad token → anonymous + a typed `AuthError` captured into the request scope
+- The captured error surfaces when the app calls `ensureAuthenticated()`/`ensureAny()`, preserving the true cause (`SessionExpiredError` vs generic "not authenticated")
+- Rationale: one GraphQL operation can touch public and protected fields — public fields must resolve while protected fields fail precisely
+- Principal is a discriminated union: `AnonymousPrincipal` (sealed singleton, `===` across requests) | `TokenPrincipal` (immutable token facts only — no authorization state, loaders, or caches)
+
+## Auth: contextual access via AccessLoader, not token claims
+- Global permissions ride in the token's identity claim block; context-scoped roles/permissions are fetched through an app-registered `accessLoader` (DI name) behind a short-TTL cache (default 60s) keyed `identity:contextId`
+- Rationale: contextual access changes without re-login and bloats tokens
+- Global vs contextual checks are separate methods (`hasGlobal` vs `withContext(...).hasAny`) — no overloads dispatching on argument type
+- No `accessLoader` registered → `withContext()` throws a configuration error at call time; token-only methods work standalone
+
+## Auth: multi-issuer trust is declarative; k8s is just another issuer
+- Each `issuers[]` entry: OIDC discovery root (must equal `iss` exactly), audience, app-assigned `tid`; unlisted issuers are invalid tokens
+- Static `jwks` on an issuer entry enables fully-offline verification (tests, air-gapped) — no separate test seam needed
+- Identity facts come from a namespaced claim block (`claims: "app"`) or a mapper fn — the mapper covers issuers that don't mint the block (k8s SA tokens derive identity from `sub`)
+- Outbound workload identity is a separate opt-in plugin (`workloadIdentityPlugin`) registering a `serviceToken` singleton: RFC 8693 exchange of the pod's projected SA token; the ServiceAccount is the credential, no deployed secrets

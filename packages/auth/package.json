@@ -1,0 +1,48 @@
+{
+  "name": "@moribashi/auth",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/moribashi/moribashi.git",
+    "directory": "packages/auth"
+  },
+  "scripts": {
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@moribashi/common": "workspace:*",
+    "@moribashi/core": "workspace:*",
+    "@moribashi/web": "workspace:*",
+    "jose": "^6.0.11"
+  },
+  "peerDependencies": {
+    "fastify": "^5.0.0"
+  },
+  "devDependencies": {
+    "@moribashi/graphql": "workspace:*",
+    "@types/node": "^25.3.0",
+    "fastify": "^5.7.4",
+    "vitest": "^4.0.18"
+  }
+}
