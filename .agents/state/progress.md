@@ -23,6 +23,7 @@ subgraph and compose subgraphs via a new gateway plugin. Not yet the default (se
 - Added `examples/platform` — a runnable reference monorepo: gateway + two core subgraphs (`identity`, `catalog`), verified end-to-end (composed queries spanning both subgraphs work through the gateway)
 - Documented the federated pattern as "Phase 3" in `docs/claude-instructions.md`, updated `docs/graphql-namespace-pattern.md`'s federation section to reference the `federated: true` flag, and added `@moribashi/graphql` to the README's package table (was missing)
 - Wrote `docs/federation-first-design.md` — the design rationale for defaulting to federation
+- Typed Fastify surface in `@moribashi/web`: `getFastify(app)` accessor, `WebCradle`/`WebRequestCradle` contracts, `request.scope` typed as `MoribashiScope<WebRequestCradle>`, and expanded Fastify type re-exports (hook handlers, plugin types, `RouteOptions`, etc.) so consumers never need `any` or manual `resolve<FastifyInstance>` generics
 
 ## Next Steps
 - Flip `graphqlPlugin()`'s `federated` default to `true` in a future release (tracked: GH #4) — needs a consumer inventory first since it's a behavior change

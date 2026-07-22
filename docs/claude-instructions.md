@@ -128,14 +128,13 @@ Wraps Fastify with per-request DI scopes. Every incoming request gets an isolate
 
 ```ts
 import { createApp } from '@moribashi/core';
-import { webPlugin } from '@moribashi/web';
-import type { FastifyInstance } from '@moribashi/web';
+import { getFastify, webPlugin } from '@moribashi/web';
 
 const app = createApp();
 app.use(webPlugin({ port: 3000 }));
 await app.scan(['**/*.svc.ts', '**/*.repo.ts'], { cwd: __dirname });
 
-const fastify = app.resolve<FastifyInstance>('fastify');
+const fastify = getFastify(app); // fully-typed FastifyInstance
 
 fastify.get('/books', async (request) => {
   // Each request gets its own scope — resolve scoped or singleton services

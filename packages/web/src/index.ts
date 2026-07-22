@@ -3,19 +3,48 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { asClass, asValue, Lifetime, type MoribashiApp, type MoribashiPlugin, type MoribashiScope } from '@moribashi/core';
 import type { OnInit, OnDestroy } from '@moribashi/common';
 
-// Re-export Fastify types for downstream consumers
-export type { FastifyInstance, FastifyRequest, FastifyReply };
+// Re-export Fastify types for downstream consumers, so route/hook/plugin
+// signatures can be written against @moribashi/web without a direct fastify import
+export type {
+  FastifyInstance,
+  FastifyRequest,
+  FastifyReply,
+  FastifyError,
+  FastifyPluginAsync,
+  FastifyPluginCallback,
+  FastifyListenOptions,
+  RouteOptions,
+  RouteHandlerMethod,
+  HookHandlerDoneFunction,
+  onRequestHookHandler,
+  onResponseHookHandler,
+  preHandlerHookHandler,
+} from 'fastify';
 
 // --- Scope symbols ---
 
 export const WEB_APP_SCOPE = Symbol.for('moribashi.scope.web.app');
 export const WEB_REQUEST_SCOPE = Symbol.for('moribashi.scope.web.request');
 
+// --- Cradle contracts ---
+
+/** Services webPlugin registers in the root container. */
+export interface WebCradle {
+  fastify: FastifyInstance;
+  webConfig: WebConfig;
+}
+
+/** Services available in every WEB_REQUEST_SCOPE scope. */
+export interface WebRequestCradle {
+  request: FastifyRequest;
+  reply: FastifyReply;
+}
+
 // --- Type augmentation ---
 
 declare module 'fastify' {
   interface FastifyRequest {
-    scope: MoribashiScope;
+    scope: MoribashiScope<WebRequestCradle>;
   }
 }
 
@@ -26,9 +55,16 @@ export interface WebPluginOptions {
   host?: string;
 }
 
-interface WebConfig {
+export interface WebConfig {
   port: number;
   host: string;
+}
+
+// --- Typed accessors ---
+
+/** Resolve the Fastify instance registered by webPlugin, fully typed. */
+export function getFastify(app: MoribashiApp): FastifyInstance {
+  return app.resolve<FastifyInstance>('fastify');
 }
 
 // --- WebServer service (lifecycle-managed) ---
@@ -76,7 +112,7 @@ export function webPlugin(opts?: WebPluginOptions): MoribashiPlugin {
 
       // Per-request scope lifecycle
       fastify.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
-        const scope = app.createScope(WEB_REQUEST_SCOPE);
+        const scope = app.createScope<WebRequestCradle>(WEB_REQUEST_SCOPE);
         scope.container.register({
           request: asValue(request),
           reply: asValue(reply),
