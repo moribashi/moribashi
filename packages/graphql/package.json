@@ -34,7 +34,8 @@
     "@mercuriusjs/gateway": "^5.2.0",
     "@moribashi/core": "workspace:*",
     "graphql": "^16.0.0",
-    "mercurius": "^16.0.0"
+    "mercurius": "^16.0.0",
+    "sofa-api": "^0.18.10"
   },
   "peerDependencies": {
     "fastify": "^5.0.0"
