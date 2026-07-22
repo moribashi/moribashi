@@ -1,8 +1,7 @@
 import { createApp } from '@moribashi/core';
 import { graphqlPlugin } from '@moribashi/graphql';
 import { pgPlugin } from '@moribashi/pg';
-import { webPlugin } from '@moribashi/web';
-import type { FastifyInstance } from '@moribashi/web';
+import { getFastify, webPlugin } from '@moribashi/web';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type BooksService from './books/books.svc.js';
@@ -30,7 +29,7 @@ await app.scan(['**/*.repo.ts', '**/*.svc.ts'], { cwd: __dirname });
 
 // --- Routes ---
 
-const fastify = app.resolve<FastifyInstance>('fastify');
+const fastify = getFastify(app);
 
 debugRoutes(fastify);
 
