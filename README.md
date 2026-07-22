@@ -12,6 +12,7 @@ Lightweight TypeScript dependency injection framework built on [Awilix](https://
 | `@moribashi/web` | Fastify web server integration with per-request scopes |
 | `@moribashi/pg` | PostgreSQL integration via Knex with migrations, camelCase query helper, and convention-based repositories |
 | `@moribashi/graphql` | GraphQL via Mercurius — standalone or as a federation subgraph (`federated: true`), plus `gatewayPlugin()` for composing subgraphs into a supergraph |
+| `@moribashi/k8s` | Live Kubernetes-native subgraph discovery (`K8sSubgraphLocator`) for a federation gateway — no static endpoint list to maintain |
 
 ## Installation
 
@@ -150,6 +151,66 @@ Each `RepoQuery` exposes bounds-checked methods:
 ```ts
 const users = await usersRepo.findAll.any();        // 0+ rows
 const user  = await usersRepo.findById.one({ id });  // exactly 1 row (throws otherwise)
+```
+
+### `@moribashi/k8s`
+
+Answers "which subgraphs currently exist and are reachable" for a federation gateway running on
+Kubernetes, without a static, hand-maintained endpoint list. It watches Services carrying a label
+(default `moribashi.io/role=subgraph`) plus the `EndpointSlice`s backing them for readiness — the same
+signal kube-proxy itself uses — and keeps a live, debounced roster:
+
+```ts
+import { k8sSubgraphLocatorPlugin, type K8sSubgraphLocator } from '@moribashi/k8s';
+
+app.use(k8sSubgraphLocatorPlugin({
+  labelSelector: 'moribashi.io/role=subgraph', // default
+  path: '/graphql',                            // default
+}));
+
+await app.start(); // K8sSubgraphLocator.onInit() lists + starts the watch
+
+const locator = app.resolve<K8sSubgraphLocator>('k8sSubgraphLocator');
+locator.all; // current ready SubgraphEndpoint[] — { name, url, namespace, ready, labels }
+
+locator.onChange((all) => {
+  // re-compose the supergraph — already debounced, so a rolling deploy
+  // doesn't trigger N recompositions in a row
+});
+```
+
+Discovery is behind a `SubgraphSource` interface (`LabeledServiceSource` is the only implementation
+today); a future CRD-backed source can plug in without changing `K8sSubgraphLocator` or any gateway code
+consuming it. See [issue #3](https://github.com/moribashi/moribashi/issues/3) for the full design
+rationale, including why this isn't part of `@moribashi/graphql` itself.
+
+**RBAC**: the Service Account running the gateway needs `list`/`watch` on `services` and
+`endpointslices` in the relevant namespace:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: subgraph-locator
+rules:
+  - apiGroups: ['']
+    resources: ['services']
+    verbs: ['list', 'watch']
+  - apiGroups: ['discovery.k8s.io']
+    resources: ['endpointslices']
+    verbs: ['list', 'watch']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: subgraph-locator
+subjects:
+  - kind: ServiceAccount
+    name: gateway # the gateway Deployment's Service Account
+roleRef:
+  kind: Role
+  name: subgraph-locator
+  apiGroup: rbac.authorization.k8s.io
 ```
 
 ## Conventions
