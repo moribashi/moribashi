@@ -91,6 +91,34 @@ importers:
         specifier: ^4.19.0
         version: 4.21.0
 
+  packages/auth:
+    dependencies:
+      '@moribashi/common':
+        specifier: workspace:*
+        version: link:../common
+      '@moribashi/core':
+        specifier: workspace:*
+        version: link:../core
+      '@moribashi/web':
+        specifier: workspace:*
+        version: link:../web
+      jose:
+        specifier: ^6.0.11
+        version: 6.2.4
+    devDependencies:
+      '@moribashi/graphql':
+        specifier: workspace:*
+        version: link:../graphql
+      '@types/node':
+        specifier: ^25.3.0
+        version: 25.3.0
+      fastify:
+        specifier: ^5.7.4
+        version: 5.7.4
+      vitest:
+        specifier: ^4.0.18
+        version: 4.0.18(@types/node@25.3.0)(tsx@4.21.0)
+
   packages/cli:
     dependencies:
       '@moribashi/core':
@@ -941,6 +969,9 @@ packages:
 
   is-property@1.0.2:
     resolution: {integrity: sha512-Ks/IoX00TtClbGQr4TWXemAnktAQvYB7HzcCxDGqEZU6oCmb2INHuOoKxbtR+HFkmYWBKv/dOZtGRiAjDhj92g==}
+
+  jose@6.2.4:
+    resolution: {integrity: sha512-N8acGzVsQy6M/fjFcxtysNc4Q379TcM5dM/qKkNtsHFji88yANnXTr7BLeP75iPnFwBfQzM/jg2BZ9+HZrHCZA==}
 
   joycon@3.1.1:
     resolution: {integrity: sha512-34wB/Y7MW7bzjKRjUKTa46I2Z7eV62Rkhva+KkopW7Qvv/OSWBqvkSY7vusOPrNuZcUG3tApvdVgNB8POj3SPw==}
@@ -2249,6 +2280,8 @@ snapshots:
   is-number@7.0.0: {}
 
   is-property@1.0.2: {}
+
+  jose@6.2.4: {}
 
   joycon@3.1.1: {}
 

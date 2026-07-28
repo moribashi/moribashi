@@ -12,6 +12,7 @@ Lightweight TypeScript dependency injection framework built on [Awilix](https://
 | `@moribashi/web` | Fastify web server integration with per-request scopes |
 | `@moribashi/pg` | PostgreSQL integration via Knex with migrations, camelCase query helper, and convention-based repositories |
 | `@moribashi/graphql` | GraphQL via Mercurius — standalone or as a federation subgraph (`federated: true`), plus `gatewayPlugin()` for composing subgraphs into a supergraph |
+| `@moribashi/auth` | OIDC bearer validation (multi-issuer), `Principal` + `SecurityService` in the request scope, optional Kubernetes workload identity via RFC 8693 token exchange |
 
 ## Installation
 
@@ -114,6 +115,27 @@ one public schema, as a first-class Moribashi app in its own right. See
 subgraphs) and [`docs/claude-instructions.md`](./docs/claude-instructions.md#phase-3--federation) for
 the full pattern — this is the recommended default shape for any service that might eventually share a
 graph with others.
+
+### `@moribashi/auth`
+
+Resource-server authentication as a plugin — validates bearer tokens against one or more OIDC
+issuers (an IdP, a Kubernetes cluster, CI) and registers a typed `principal` and `securityService`
+into the request scope:
+
+```ts
+import { authPlugin } from '@moribashi/auth';
+
+app.use(webPlugin({ port: 3000 }));
+app.use(authPlugin({
+  issuers: [{ issuer: 'https://idp.example.com/realms/main', audience: 'my-platform', tid: 1 }],
+  claims: 'app',
+}));
+```
+
+Verification failures are captured, not thrown — public GraphQL fields resolve while protected
+fields fail with the true cause (e.g. `SessionExpiredError`). Optional `workloadIdentityPlugin()`
+mints outbound service tokens on Kubernetes via RFC 8693 token exchange, with no deployed secrets.
+See [`packages/auth`](./packages/auth) for the full guide.
 
 #### SQL-file Repositories
 

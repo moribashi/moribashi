@@ -55,10 +55,14 @@ jobs:
           npx tsc --noEmit -p packages/core/tsconfig.json
           npx tsc --noEmit -p packages/cli/tsconfig.json
           npx tsc --noEmit -p packages/web/tsconfig.json
+          npx tsc --noEmit -p packages/graphql/tsconfig.json
           npx tsc --noEmit -p packages/pg/tsconfig.json
+          npx tsc --noEmit -p packages/auth/tsconfig.json
 
       - name: Test
-        run: pnpm --filter @moribashi/pg run test
+        run: |
+          pnpm --filter @moribashi/pg run test
+          pnpm --filter @moribashi/auth run test
         env:
           PGHOST: localhost
 
