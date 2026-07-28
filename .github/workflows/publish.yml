@@ -91,5 +91,17 @@ jobs:
       - name: Build all packages
         run: pnpm run build
 
+      # Trusted publishing (OIDC) can't create a brand-new package — its first
+      # publish needs a token. No-op when the NPM_TOKEN secret is absent, so
+      # established packages keep publishing via OIDC.
+      - name: Configure npm token (first-publish fallback)
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
+            echo "Token fallback enabled"
+          fi
+
       - name: Publish to npmjs
         run: pnpm -r --filter './packages/**' publish --access public --no-git-checks
