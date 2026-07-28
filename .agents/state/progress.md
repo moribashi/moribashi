@@ -6,6 +6,8 @@ Authentication — `@moribashi/auth` provides OIDC bearer validation (multi-issu
 via RFC 8693 token exchange (GH #11).
 
 ## Recently Completed
+- Merged PR #14 (`@moribashi/auth`) after rebasing onto main: fixed a post-rebase type error against PR #9's typed `WebRequestCradle` by declaration-merging `AuthCradle` into it from `@moribashi/auth` (importing the package now types the auth services on `request.scope`); added auth+graphql type-checks and the auth test suite to CI
+- Cut and tagged **0.3.0** (auth package + typed web Fastify surface). Six packages published via CI trusted publishing; **`@moribashi/auth`'s first npm publish is pending** — trusted publishing (OIDC) can't create a new package, so it needs a one-time manual `npm publish` (or a granular token), then a trusted-publisher config on npmjs for future releases
 - Implemented `@moribashi/auth` (GH #11): `authPlugin` (issuer selection by unverified `iss`, JWKS via static set / direct URI / OIDC discovery, jose-backed verification), `AnonymousPrincipal`/`TokenPrincipal` union, captured-error model (`AuthError` taxonomy — hook never 401s; errors surface from `ensure*` with true cause), `SecurityService` with `AccessLoader` + shared TTL `AccessCache`, and `workloadIdentityPlugin` (`serviceToken` singleton: RFC 8693 exchange of projected SA tokens, refresh-ahead-of-expiry, file re-read on rotation)
 - 33 tests for auth: offline JWKS unit tests, cache TTL/isolation/failure tests, fake-token-endpoint workload-identity tests, and a full web+auth+graphql integration test (public + protected fields in one operation)
 - Fixed TS6059 errors by removing redundant `rootDir`/`outDir` from `tsconfig.base.json` (packages set their own)
