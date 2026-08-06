@@ -13,6 +13,7 @@ Lightweight TypeScript dependency injection framework built on [Awilix](https://
 | `@moribashi/pg` | PostgreSQL integration via Knex with migrations, camelCase query helper, and convention-based repositories |
 | `@moribashi/graphql` | GraphQL via Mercurius — standalone or as a federation subgraph (`federated: true`), plus `gatewayPlugin()` for composing subgraphs into a supergraph |
 | `@moribashi/auth` | OIDC bearer validation (multi-issuer), `Principal` + `SecurityService` in the request scope, optional Kubernetes workload identity via RFC 8693 token exchange |
+| `@moribashi/flags` | Feature flags via OpenFeature — ships an in-memory default, OFREP-by-URL for the open standard, or any pluggable provider; per-request targeting derived from the auth principal |
 
 ## Installation
 

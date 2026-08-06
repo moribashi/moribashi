@@ -10,6 +10,7 @@ packages/
   core/     - DI container, plugin system, scopes, lifecycle (depends on common + awilix)
   auth/     - OIDC bearer validation, Principal/SecurityService in request scope, k8s workload identity (depends on core + web + jose)
   cli/      - CLI integration (depends on core)
+  flags/    - Feature flags via OpenFeature: in-memory default, OFREP-by-URL, or pluggable provider; per-request context from the auth principal (depends on core + @openfeature/server-sdk; optional peers: web, @openfeature/ofrep-provider)
   graphql/  - GraphQL integration via Mercurius (depends on core, peer: fastify)
   pg/       - PostgreSQL via Knex: Db query helper, Repo/RepoQuery pattern, migrations
   web/      - Web integration (depends on core)
@@ -17,7 +18,7 @@ examples/
   simple/   - Demo app showing container usage with lifecycle hooks + GraphQL
 ```
 
-Packages have a dependency order: common → core → {cli, graphql, pg, web} → auth. Always build in this order.
+Packages have a dependency order: common → core → {cli, graphql, pg, web} → {auth, flags}. Always build in this order. (`flags` treats `web` as an optional peer — it works without it, but the per-request context hook only wires when web is present.)
 
 ## Commands
 
@@ -59,6 +60,7 @@ After modifying `packages/common/src`, rebuild it before type-checking core (cor
 - `scope.cradle` exposes the Awilix proxy; property access lazily resolves services
 - `@moribashi/graphql` wraps resolvers so `this` is the scope cradle (services resolve lazily via `this.serviceName`)
 - `@moribashi/auth` registers `principal`/`securityService`/`authError` into the web request scope via an `onRequest` hook (after `webPlugin`); verification failures are captured into the scope, never rejected at the hook — they surface from `ensure*` calls with the true cause
+- `@moribashi/flags` wraps the OpenFeature server SDK: a `FeatureProviderLifecycle` singleton sets the provider in `onInit` (via `setProviderAndWait`, gating `app.start()` on READY) and tears it down in `onDestroy`. Provider precedence lives in one pure `resolveProvider()`: `provider` (any OpenFeature provider) > `ofrep` (lazily-imported OFREP provider, by URL) > bundled `InMemoryProvider` (the ships-by-default). A `Flags` SCOPED service evaluates with a per-request `evaluationContext` set by an `onRequest` hook from the `principal` (register after `authPlugin`); with no web/auth it uses the root empty context
 
 ## Session State
 

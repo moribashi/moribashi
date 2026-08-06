@@ -1,11 +1,12 @@
 # Progress
 
 ## Current Milestone
-Authentication — `@moribashi/auth` provides OIDC bearer validation (multi-issuer), a typed
-`Principal` + `SecurityService` in the request DI scope, and optional Kubernetes workload identity
-via RFC 8693 token exchange (GH #11).
+Feature flags — `@moribashi/flags` wraps OpenFeature: a working in-memory default that ships out of
+the box, OFREP-by-URL for the open remote-evaluation standard, and any pluggable provider, with
+per-request targeting derived from the auth principal (GH #17, sub-issues #18–#21).
 
 ## Recently Completed
+- Built `@moribashi/flags` (GH #17): OpenFeature server-SDK wrapper. `flagsPlugin()` ships a dep-free in-memory default (bundled in server-sdk), `ofrep: { baseUrl }` lazily loads the OFREP provider for the open standard, and `provider` accepts any OpenFeature provider — precedence resolved in one pure `resolveProvider()`. `FeatureProviderLifecycle` sets the provider in `onInit` via `setProviderAndWait` (gates `app.start()` on READY) and `clearProviders()` in `onDestroy`. A SCOPED `Flags` service evaluates with a per-request `evaluationContext` set by an `onRequest` hook from the `principal` (mirrors the auth hook); web/auth are optional peers via a structural `PrincipalLike` type, so flags-only apps use an empty context. 12 tests (precedence, context mapping, root lifecycle, web+auth-like integration) green; example `/books` route flag-gated; README + CLAUDE.md + design doc (`docs/openfeature-design.md`) shipped
 - Merged PR #14 (`@moribashi/auth`) after rebasing onto main: fixed a post-rebase type error against PR #9's typed `WebRequestCradle` by declaration-merging `AuthCradle` into it from `@moribashi/auth` (importing the package now types the auth services on `request.scope`); added auth+graphql type-checks and the auth test suite to CI
 - Cut and tagged **0.3.0** (auth package + typed web Fastify surface) — all seven packages live on npm. `@moribashi/auth`'s first publish went through CI via an `NPM_TOKEN` secret fallback in publish.yml (trusted publishing/OIDC can't create a new package). Follow-up: configure a trusted publisher for `@moribashi/auth` on npmjs.com, then delete the `NPM_TOKEN` repo secret so all packages ride the tokenless OIDC path
 - Implemented `@moribashi/auth` (GH #11): `authPlugin` (issuer selection by unverified `iss`, JWKS via static set / direct URI / OIDC discovery, jose-backed verification), `AnonymousPrincipal`/`TokenPrincipal` union, captured-error model (`AuthError` taxonomy — hook never 401s; errors surface from `ensure*` with true cause), `SecurityService` with `AccessLoader` + shared TTL `AccessCache`, and `workloadIdentityPlugin` (`serviceToken` singleton: RFC 8693 exchange of projected SA tokens, refresh-ahead-of-expiry, file re-read on rotation)

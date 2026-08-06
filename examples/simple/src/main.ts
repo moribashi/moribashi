@@ -1,4 +1,5 @@
 import { createApp } from '@moribashi/core';
+import { flagsPlugin } from '@moribashi/flags';
 import { graphqlPlugin } from '@moribashi/graphql';
 import { pgPlugin } from '@moribashi/pg';
 import { getFastify, webPlugin } from '@moribashi/web';
@@ -24,6 +25,20 @@ app.use(pgPlugin({
 }));
 app.use(webPlugin({ port: 3000 }));
 app.use(graphqlPlugin({ schema, resolvers, graphiql: true }));
+// Feature flags via OpenFeature. No provider configured → the bundled
+// in-memory default, so the app has working flags with zero infrastructure.
+// Swap for a real backend with `flagsPlugin({ ofrep: { baseUrl } })` or any
+// `flagsPlugin({ provider })`. Registered after web so per-request evaluation
+// context is wired.
+app.use(flagsPlugin({
+  flags: {
+    'books.enriched-authors': {
+      variants: { on: true, off: false },
+      defaultVariant: 'off',
+      disabled: false,
+    },
+  },
+}));
 
 await app.scan(['**/*.repo.ts', '**/*.svc.ts'], { cwd: __dirname });
 
@@ -34,8 +49,15 @@ const fastify = getFastify(app);
 debugRoutes(fastify);
 
 fastify.get('/books', async (request) => {
-  const booksService = request.scope.resolve<BooksService>('booksService');
-  return booksService.findAllWithAuthors();
+  // Flag-gated behavior, evaluated with the per-request context (which carries
+  // the principal's targetingKey when @moribashi/auth is registered).
+  const enriched = await request.scope.cradle.flags.boolean('books.enriched-authors', false);
+  if (enriched) {
+    const booksService = request.scope.resolve<BooksService>('booksService');
+    return booksService.findAllWithAuthors();
+  }
+  const booksRepo = request.scope.resolve<{ findAll(): Promise<unknown[]> }>('booksRepo');
+  return booksRepo.findAll();
 });
 
 // --- Start ---
