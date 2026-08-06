@@ -12,7 +12,8 @@
     "@moribashi/cli": "workspace:*",
     "@moribashi/pg": "workspace:*",
     "@moribashi/graphql": "workspace:*",
-    "@moribashi/web": "workspace:*"
+    "@moribashi/web": "workspace:*",
+    "@moribashi/flags": "workspace:*"
   },
   "devDependencies": {
     "tsx": "^4.19.0"

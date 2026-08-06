@@ -71,3 +71,15 @@
 - Static `jwks` on an issuer entry enables fully-offline verification (tests, air-gapped) — no separate test seam needed
 - Identity facts come from a namespaced claim block (`claims: "app"`) or a mapper fn — the mapper covers issuers that don't mint the block (k8s SA tokens derive identity from `sub`)
 - Outbound workload identity is a separate opt-in plugin (`workloadIdentityPlugin`) registering a `serviceToken` singleton: RFC 8693 exchange of the pod's projected SA token; the ServiceAccount is the credential, no deployed secrets
+
+## Flags: OpenFeature wrapper, provider is the only knob (GH #17)
+- `@moribashi/flags` wraps `@openfeature/server-sdk`. Deliberately a leaf package, NOT part of core: core carries no third-party deps beyond awilix and is the graph root; adding OpenFeature there would tax every consumer (CLI/workers). A one-line `app.use(flagsPlugin())` with a working default achieves "feels core" without the coupling — same call as web/pg/auth.
+- Pluggability is OpenFeature's own `Provider` seam, not something we invent. One pure `resolveProvider(opts)`, precedence `provider` > `ofrep` > in-memory:
+  - `provider` — any OpenFeature provider (vendor SDK / custom). Full escape hatch.
+  - `ofrep: { baseUrl }` — the recommended production default: standards-based (OFREP is a REST contract, not a vendor), configured by URL only. Provider imported lazily (`await import`) so apps that don't use it never load or need the peer.
+  - neither → bundled `InMemoryProvider` (ships inside server-sdk, so the default is truly dep-free). Guarantees an app ALWAYS has a working flag client — great for tests/local/air-gapped.
+- Lifecycle reuse, no new concepts: a `FeatureProviderLifecycle` singleton calls `setProviderAndWait` in `onInit` (so `app.start()` gates on the provider being READY, exactly like pg migrations) and `OpenFeature.clearProviders()` in `onDestroy`.
+- Per-request context mirrors the auth hook: an `onRequest` hook (register flags AFTER authPlugin) reads `principal` off the request scope and registers `evaluationContext` (default `targetingKey = principal.identity`, plus tid/type). Root registers an empty `evaluationContext` so the SCOPED `Flags` service resolves cleanly under Awilix strict mode even with no web.
+- Soft deps, structural coupling: web + auth are optional peers. `PrincipalLike` is a structural type (not an import of auth's `Principal`), so flags has zero dependency on auth — any object with `identity`/`tid`/`type` works, and an app with no auth just gets the empty context.
+- Packaging: `@openfeature/server-sdk` direct dep (defines our public `Provider`/`Client`/`EvaluationContext` types, re-exported); `@openfeature/ofrep-provider` and `@moribashi/web` are optional peers (`peerDependenciesMeta.optional`) + devDeps.
+- Rejected the AsyncLocalStorage transaction-context propagator as the default: it's a second, global, implicit request-context mechanism competing with Moribashi's explicit DI scopes. Could be offered later as an opt-in.
