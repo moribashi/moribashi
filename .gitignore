@@ -22,3 +22,4 @@ dist/
 
 .devcontainer/data
 .pnpm-store
+.claude/worktrees
