@@ -101,3 +101,84 @@ export function fakeFetch(
   impl.calls = calls;
   return impl;
 }
+
+// ---------------------------------------------------------------------------
+// Consumer fakes
+// ---------------------------------------------------------------------------
+
+export interface FakeConsumedMessage {
+  topic: string;
+  partition: number;
+  offset: bigint;
+  key?: Buffer;
+  value: Buffer;
+  headers: Map<string, string>;
+  timestamp: bigint;
+  commit: Mock;
+}
+
+let nextOffset = 0n;
+
+/** One message as `@platformatic/kafka` would hand it to us. */
+export function fakeMessage(
+  overrides: Partial<Omit<FakeConsumedMessage, 'commit' | 'headers'>> & {
+    headers?: Record<string, string>;
+  } = {},
+): FakeConsumedMessage {
+  const { headers, ...rest } = overrides;
+  return {
+    topic: 't',
+    partition: 0,
+    offset: nextOffset++,
+    key: Buffer.from('k'),
+    value: Buffer.from('encoded'),
+    timestamp: 1_700_000_000_000n,
+    ...rest,
+    headers: new Map(Object.entries(headers ?? {})),
+    commit: vi.fn(async () => {}),
+  };
+}
+
+export interface FakeStream {
+  close: Mock;
+  closed: boolean;
+  [Symbol.asyncIterator](): AsyncIterator<FakeConsumedMessage>;
+}
+
+/**
+ * A stream that yields the given messages and then ends — which lets a test
+ * `await consumer.finished` instead of polling. A real stream never ends;
+ * `close()` is what stops it, and that is exercised too.
+ */
+export function fakeStream(messages: FakeConsumedMessage[]): FakeStream {
+  const stream: FakeStream = {
+    closed: false,
+    close: vi.fn(async () => {
+      stream.closed = true;
+    }),
+    async *[Symbol.asyncIterator]() {
+      for (const message of messages) {
+        if (stream.closed) return;
+        yield message;
+      }
+    },
+  };
+  return stream;
+}
+
+export interface FakeRawConsumer {
+  consume: Mock;
+  close: Mock;
+  lastConsumeOptions?: Record<string, unknown>;
+}
+
+export function fakeRawConsumer(stream: FakeStream): FakeRawConsumer {
+  const fake: FakeRawConsumer = {
+    consume: vi.fn(async (options: Record<string, unknown>) => {
+      fake.lastConsumeOptions = options;
+      return stream;
+    }),
+    close: vi.fn(async () => {}),
+  };
+  return fake;
+}

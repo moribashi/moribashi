@@ -112,7 +112,43 @@
 - **No defaults for `clientId`/`brokers`/`schemaRegistry.url`.** hd-kafka defaults to `localhost`; a service that silently talks to localhost in production fails worse than one that crashloops
 - **Config is validated at `kafkaPlugin()` construction**, not inside `register()`. Resolving config opens no connection, so there is no reason to defer the throw into a rejected `app.start()`
 
-## Kafka: producer-only for 0.4.0
-- The brief scoped the package to connection lifecycle, DI registration, schema registration and shutdown, and the first consumer (svc-iam) only produces. No `createConsumer()` ships in 0.4.0
-- A consumer is not just the mirror of the producer — it needs the scope story (`EventContext`, already on the roadmap as a scope plugin), offset/commit semantics, and a decode-failure policy (DLQ vs crash). Shipping those unasked would be untested surface in a package other services depend on
-- `@platformatic/kafka`'s `Consumer` is directly usable in the meantime with `kafkaClient.connectionOptions`, and `schemaRegistry.decode()` handles the wire format — which is exactly what the integration suite does
+## Kafka consumer: shipped in 0.4.0 after the four open questions were settled
+- The producer shipped first with `createConsumer()` deferred, because a consumer is not the mirror of a producer: it needs a scope story, commit semantics, a failure policy, and a handler-binding convention. Those four were settled explicitly rather than guessed, and the consumer now ships in the same 0.4.0 train
+- It lives behind a *second* plugin (`kafkaConsumerPlugin`), not an option on `kafkaPlugin`, following `@moribashi/auth`'s precedent of `workloadIdentityPlugin`: a producer-only service should not pay for consumer options, and a consumer-only one should not have to configure a producer
+- The two share one client — `kafkaConsumerPlugin` reuses an already-registered `kafkaClient` when it finds one, so a service that both produces and consumes has a single place for broker config to be wrong
+- Unlike the producer, the consumer is **not** framework-free: `createConsumer()` requires a `MoribashiApp`. The per-message DI scope is the point of it, and scopes come from the app. Pretending otherwise would have meant a fake scope object that nobody wants
+
+## Kafka consumer: per-message DI scope, mirroring the web request scope
+- `EVENT_SCOPE = Symbol.for('moribashi.scope.event')`, following the `WEB_REQUEST_SCOPE` convention exactly. A scope per message, disposed once the handler settles; services register into it with `app.registerInScope(EVENT_SCOPE, …)` the same way auth does for web
+- The cradle carries `event` (topic, partition, offset, key and raw key, decoded value and raw value, headers, timestamp, correlation id, attempt) and `correlationId`. `EventCradle` is exported so a service declaration-merges its own scoped services into it, the way `AuthCradle` merges into `WebRequestCradle`
+- Correlation id comes from the `x-correlation-id` header, matched case-insensitively (Kafka headers are bytes, so casing is whatever the producer wrote), and is generated when absent. That header name was chosen because the HTTP side already uses it — one id can then span a request and the events it causes
+- **A retry gets a fresh scope, not the message's original one.** A handler that threw halfway may have left scoped services half-applied; retrying on top of that turns one bug into two. `event.attempt` tells the handler which delivery it is on
+
+## Kafka consumer: at-least-once, commit after the handler
+- The offset moves only once the handler resolves. `@platformatic/kafka` defaults `autocommit` to **true**, so it is turned off explicitly — a default that would have silently converted the whole design into at-most-once
+- Handlers must be idempotent, and the README says so in a call-out rather than a footnote. A crash, a rebalance, or a failed commit between the handler finishing and the offset landing redelivers the message; no configuration changes that
+- A failed commit is logged loudly but is not fatal — redelivery is the documented behaviour, and killing the consumer over a rebalance would be worse than the duplicate
+
+## Kafka consumer: failure policy, and what `'throw'` has to mean
+- One policy covers both decode failures and handler throws, because both mean "this message cannot move forward". `'throw' | 'skip' | { dlq }`, defaulting to `{ dlq }` when a DLQ topic is configured and `'throw'` otherwise
+- **Bounded in-process retry runs first** (`maxRetries`, default 3, exponential backoff to a ceiling), so a registry blip or a momentary lock timeout never reaches the DLQ. Decode failures are retried too — an unreachable registry is exactly the transient case retry exists for
+- `'skip'` is a single option (`failurePolicy: 'skip'`) with no ceremony. Logging is a flag (`logSkips`, default on) but the counter always increments; `consumer.stats` is public so a service can surface skip/DLQ rates
+- **`'throw'` is defined as *stop consuming*, not "propagate and continue".** With commit-after-handler a throw means the offset is never committed, so naive propagation redelivers the poison message forever — an invisible infinite retry that pins a CPU and never advances. Instead the run loop ends, `finished` rejects, and `onFatal` fires (logging and rethrowing on the next tick by default, so the pod restarts visibly)
+- Corollary that fell out of testing: once fatal, **queued-but-unstarted messages must be abandoned, not processed**. Committing a later offset in the same partition would skip *past* the uncommitted poison message and lose it silently. The same guard makes `stop()` abandon queued work, which is safe because at-least-once redelivers it
+- The partition is wedged under `'throw'` either way. That is the honest cost, documented as such: it buys a loud, diagnosable outage instead of a silent one, and it is why `{ dlq }` is the better choice the moment a service has somewhere to put failures
+- DLQ messages carry the **original bytes and key**, untouched. Re-encoding something that failed to decode is impossible, and re-encoding a handler failure would hide what actually arrived. Failure context rides in `x-moribashi-dlq-*` headers (original topic/partition/offset, error, error name, attempts, group id, timestamp)
+- **A failing DLQ publish is fatal.** Swallowing it would drop the message entirely, which is the one outcome nobody chose. The error text names the likely cause: the cluster does not auto-create topics, so the DLQ must be declared in the service's `topics:` values
+
+## Kafka consumer: handler binding by map *and* convention
+- Both styles are on by default. The explicit map (`{ topic: 'diName' }`) is resolved from the container by name, which keeps handlers constructor-injected like everything else; convention discovery picks up `*.handler.ts` through core's existing `app.scan()`/`formatName` mechanism (`identity.handler.ts` → `identityHandler`), and the handler declares its own `topic`
+- No second discovery mechanism was invented: binding reads the container's registrations, exactly as `Repo._autowire()` reads a directory next to itself. Nothing new to learn
+- **Explicit wins on conflict** (it is what someone wrote down on purpose, and it is logged when it shadows a convention binding). **Two convention handlers on one topic is a startup error**, not last-one-wins — which handler ran would otherwise depend on filesystem ordering, and the loser would fail silently forever. Names are sorted so the error names the same two handlers on every run
+- Binding resolves at `onInit`, not at plugin `register()`, so a service may call `app.scan()` after `app.use(kafkaConsumerPlugin(…))` — the natural ordering in a `main.ts`
+- Subscriptions are derived from the bindings. There is deliberately no separate `topics` option: a topic with no handler is a subscription nobody asked for
+- Convention discovery that *fails to resolve* a `*Handler` registration is reported as a `HandlerBindingError` naming the registration and pointing at `convention: false`. Skipping it silently would hide a genuinely broken handler; letting the raw container error through would say nothing about why it was being resolved
+
+## Kafka consumer: concurrency, group id, and what stays true from the producer
+- **One lane per partition**: strictly sequential within a partition, because in-order delivery is the entire reason a partition key exists; parallel across partitions; globally bounded by `concurrency` (default 4) so a slow handler cannot fan out unboundedly, with backpressure applied to the stream rather than buffering
+- **`groupId` is required with no derived default**, consistent with `brokers`/`clientId`. A silently-wrong group id either replays a whole topic or quietly joins someone else's
+- **Consumers never register schemas**, as settled in the original brief. Decoding reads the schema id out of the Confluent framing and looks it up — a read, not a registration
+- **Lifecycle through the app, never signals.** `onInit` joins the group, `onDestroy` drains handlers already running and then disconnects. The one place the package deliberately escapes the process is the default `onFatal`, which rethrows so a wedged consumer cannot look healthy

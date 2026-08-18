@@ -11,7 +11,7 @@ packages/
   auth/     - OIDC bearer validation, Principal/SecurityService in request scope, k8s workload identity (depends on core + web + jose)
   cli/      - CLI integration (depends on core)
   graphql/  - GraphQL integration via Mercurius (depends on core, peer: fastify)
-  kafka/    - Kafka/Redpanda transport: schema-aware producer, protobuf schema registration at boot (depends on core)
+  kafka/    - Kafka/Redpanda transport: schema-aware producer + consumer, protobuf schema registration at boot, per-message event scope (depends on core)
   pg/       - PostgreSQL via Knex: Db query helper, Repo/RepoQuery pattern, migrations
   web/      - Web integration (depends on core)
 examples/
@@ -61,6 +61,7 @@ After modifying `packages/common/src`, rebuild it before type-checking core (cor
 - `@moribashi/graphql` wraps resolvers so `this` is the scope cradle (services resolve lazily via `this.serviceName`)
 - `@moribashi/auth` registers `principal`/`securityService`/`authError` into the web request scope via an `onRequest` hook (after `webPlugin`); verification failures are captured into the scope, never rejected at the hook — they surface from `ensure*` calls with the true cause
 - `@moribashi/kafka` registers `kafkaClient`/`schemaRegistry`/`producer` into the root container; `producer` is a singleton so `app.stop()` disconnects it via `onDestroy`. Schema registration runs inside plugin `register()` (awaited by `app.start()` before singletons resolve), so an incompatible contract fails the pod at boot. It takes no dependency on `@moribashi/auth` — SASL/OAUTHBEARER tokens arrive through a `tokenProvider?: () => Promise<string>` the service wires to `serviceToken`
+- `@moribashi/kafka`'s `kafkaConsumerPlugin` registers a `consumer` singleton (joins the group on `app.start()`, drains on `app.stop()`) and reuses an already-registered `kafkaClient`. Each message gets its own DI scope keyed `EVENT_SCOPE` (`Symbol.for('moribashi.scope.event')`) carrying `event`/`correlationId` — the event-side counterpart of `WEB_REQUEST_SCOPE`. Handlers bind by explicit map or `*.handler.ts` convention (explicit wins; a convention double-bind is a startup error). Commits happen after the handler resolves, so delivery is at-least-once and handlers must be idempotent
 
 ## Session State
 

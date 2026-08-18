@@ -11,32 +11,41 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createApp } from '@moribashi/core';
+import { asFunction, createApp, Lifetime } from '@moribashi/core';
 import {
   buildConnectionOptions,
   checkSchemaCompatibility,
+  createConsumer,
   createKafkaClient,
   createKafkaConfig,
   createProducer,
   isKafkaClient,
   kafkaPlugin,
   KafkaConfigError,
+  DLQ_HEADER_PREFIX,
   readSchemaSources,
   registerSchemas,
+  resolveHandlerBindings,
   SchemaEncodeError,
   SchemaRegistrationError,
   subjectForFile,
   subjectForTopic,
+  type CreateConsumerOptions,
+  type EventMessage,
   type KafkaProducer,
   type Logger,
 } from '../index.js';
+import type { RawConsumer, RawDlqProducer } from '../consumer.js';
 import {
   baseConfig,
   clearKafkaEnv,
   fakeClient,
   fakeFetch,
+  fakeMessage,
+  fakeRawConsumer,
   fakeRawProducer,
   fakeRegistry,
+  fakeStream,
 } from './helpers.js';
 
 const savedEnv = { ...process.env };
@@ -479,5 +488,252 @@ describe('plugin under duress', () => {
     process.env.KAFKA_TLS = 'sometimes';
 
     expect(() => kafkaPlugin(baseConfig)).toThrow(KafkaConfigError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Consumer
+// ---------------------------------------------------------------------------
+
+describe('consumer under duress', () => {
+  function consumerSetup(overrides: Partial<CreateConsumerOptions> = {}, messages = [fakeMessage()]) {
+    const registry = fakeRegistry({ decode: vi.fn(async () => ({ ok: true })) });
+    const stream = fakeStream(messages);
+    const raw = fakeRawConsumer(stream);
+    const dlqProducer = fakeRawProducer();
+    const fatals: Error[] = [];
+    const consumer = createConsumer({
+      app: createApp(),
+      groupId: 'g',
+      client: fakeClient(baseConfig, registry),
+      handlers: { t: () => {} },
+      convention: false,
+      consumer: raw as unknown as RawConsumer,
+      dlqProducer: dlqProducer as unknown as RawDlqProducer,
+      log: silentLog,
+      sleep: async () => {},
+      onFatal: error => void fatals.push(error),
+      ...overrides,
+    });
+    return { consumer, registry, raw, stream, dlqProducer, fatals, messages };
+  }
+
+  async function drain(consumer: { start(): Promise<void>; finished: Promise<void> }) {
+    await consumer.start();
+    await consumer.finished.catch(() => {});
+  }
+
+  it('wraps a handler that throws a bare string', async () => {
+    const { consumer, dlqProducer } = consumerSetup({
+      handlers: {
+        t: () => {
+          throw 'not an error object';
+        },
+      },
+      maxRetries: 0,
+      dlq: 'dlq.v1',
+    });
+
+    await drain(consumer);
+
+    expect(dlqProducer.send.mock.calls[0][0].messages[0].headers[`${DLQ_HEADER_PREFIX}error-name`])
+      .toBe('EventHandlerError');
+  });
+
+  it('treats a rejected promise the same as a synchronous throw', async () => {
+    const { consumer } = consumerSetup({
+      handlers: { t: async () => Promise.reject(new Error('async boom')) },
+      maxRetries: 0,
+      failurePolicy: 'skip',
+    });
+
+    await drain(consumer);
+
+    expect(consumer.stats.skipped).toBe(1);
+  });
+
+  it('keeps a binary key intact even though the UTF-8 view is mangled', async () => {
+    const key = Buffer.from([0xff, 0xfe, 0x00, 0x01]);
+    let seen: EventMessage | undefined;
+    const { consumer } = consumerSetup(
+      { handlers: { t: event => void (seen = event) } },
+      [fakeMessage({ key })],
+    );
+
+    await drain(consumer);
+
+    expect(seen!.rawKey).toEqual(key);
+    expect(typeof seen!.key).toBe('string');
+  });
+
+  it('an empty correlation header does not become an empty correlation id', async () => {
+    let seen: EventMessage | undefined;
+    const { consumer } = consumerSetup(
+      { handlers: { t: event => void (seen = event) } },
+      [fakeMessage({ headers: { 'x-correlation-id': '' } })],
+    );
+
+    await drain(consumer);
+
+    expect(seen!.correlationId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('gives every retry a freshly decoded value, not the one the last attempt mutated', async () => {
+    const values: unknown[] = [];
+    let attempt = 0;
+    const { consumer } = consumerSetup({
+      registry: undefined,
+      handlers: {
+        t: event => {
+          values.push(JSON.parse(JSON.stringify(event.value)));
+          (event.value as Record<string, unknown>).mutated = true;
+          if (++attempt < 2) throw new Error('transient');
+        },
+      },
+      maxRetries: 2,
+    });
+
+    await drain(consumer);
+
+    expect(values).toEqual([{ ok: true }, { ok: true }]);
+  });
+
+  it('a commit failure on a skipped message is loud but not fatal', async () => {
+    const message = fakeMessage();
+    message.commit = vi.fn(async () => {
+      throw new Error('rebalance');
+    });
+    const { consumer, fatals } = consumerSetup(
+      {
+        handlers: {
+          t: () => {
+            throw new Error('poison');
+          },
+        },
+        maxRetries: 0,
+        failurePolicy: 'skip',
+      },
+      [message],
+    );
+
+    await drain(consumer);
+
+    expect(fatals).toHaveLength(0);
+    expect(consumer.stats.skipped).toBe(1);
+  });
+
+  it('a fatal on one partition does not commit queued work on another', async () => {
+    const messages = [
+      fakeMessage({ partition: 0, offset: 0n }),
+      fakeMessage({ partition: 1, offset: 0n }),
+      fakeMessage({ partition: 1, offset: 1n }),
+    ];
+    const { consumer } = consumerSetup(
+      {
+        concurrency: 1,
+        maxRetries: 0,
+        handlers: {
+          t: event => {
+            if (event.partition === 0) throw new Error('poison');
+          },
+        },
+      },
+      messages,
+    );
+
+    await drain(consumer);
+
+    expect(messages[0].commit).not.toHaveBeenCalled();
+    expect(consumer.stats.received).toBeLessThan(3);
+  });
+
+  it('a DLQ message with no key does not invent one', async () => {
+    const { consumer, dlqProducer } = consumerSetup(
+      {
+        handlers: {
+          t: () => {
+            throw new Error('poison');
+          },
+        },
+        maxRetries: 0,
+        dlq: 'dlq.v1',
+      },
+      [fakeMessage({ key: undefined })],
+    );
+
+    await drain(consumer);
+
+    expect(dlqProducer.send.mock.calls[0][0].messages[0]).not.toHaveProperty('key');
+  });
+
+  it('surfaces a convention handler that cannot be built, with context', () => {
+    const app = createApp();
+    app.container.register({
+      brokenHandler: asFunction(() => {
+        throw new Error('missing dependency');
+      }).setLifetime(Lifetime.SINGLETON),
+    });
+
+    expect(() => resolveHandlerBindings({ app, log: silentLog })).toThrow(
+      /Convention discovery could not resolve "brokenHandler"/,
+    );
+  });
+
+  it('points at `convention: false` when a non-handler matches the pattern', () => {
+    const app = createApp();
+    app.container.register({
+      errorHandler: asFunction(() => {
+        throw new Error('needs a logger');
+      }).setLifetime(Lifetime.SINGLETON),
+    });
+
+    expect(() => resolveHandlerBindings({ app, log: silentLog })).toThrow(/convention/);
+  });
+
+  it('counts stats consistently when partitions run in parallel', async () => {
+    const messages = Array.from({ length: 12 }, (_, i) =>
+      fakeMessage({ partition: i % 4, offset: BigInt(i) }),
+    );
+    const { consumer } = consumerSetup(
+      {
+        concurrency: 4,
+        handlers: {
+          t: async event => {
+            await new Promise(resolve => setTimeout(resolve, 1));
+            if (event.partition === 3) throw new Error('poison');
+          },
+        },
+        maxRetries: 0,
+        failurePolicy: 'skip',
+      },
+      messages,
+    );
+
+    await drain(consumer);
+
+    expect(consumer.stats.received).toBe(12);
+    expect(consumer.stats.processed + consumer.stats.skipped).toBe(12);
+  });
+
+  it('stops retrying once the consumer is stopping', async () => {
+    let calls = 0;
+    const setupResult = consumerSetup({
+      maxRetries: 10,
+      failurePolicy: 'skip',
+      handlers: {
+        t: () => {
+          calls++;
+          // A SIGTERM-driven app.stop() lands mid-retry. Not awaited: stop()
+          // itself waits for this handler to return.
+          if (calls === 2) void setupResult.consumer.stop();
+          throw new Error('transient');
+        },
+      },
+    });
+
+    await drain(setupResult.consumer);
+
+    expect(calls).toBeGreaterThanOrEqual(2);
+    expect(calls).toBeLessThan(11);
   });
 });

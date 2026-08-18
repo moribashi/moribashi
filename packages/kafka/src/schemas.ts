@@ -8,6 +8,13 @@ import { SchemaRegistrationError } from './errors.js';
 export interface Logger {
   warn(obj: Record<string, unknown>, msg: string): void;
   info(obj: Record<string, unknown>, msg: string): void;
+  /** Optional — callers that omit it get failures on `warn` instead. */
+  error?(obj: Record<string, unknown>, msg: string): void;
+}
+
+/** Logs at error level, falling back to `warn` for loggers without one. */
+export function logError(log: Logger, obj: Record<string, unknown>, msg: string): void {
+  (log.error ?? log.warn).call(log, obj, msg);
 }
 
 const defaultLogger: Logger = {
