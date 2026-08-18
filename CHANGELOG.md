@@ -57,6 +57,56 @@ lockstep — a release bumps every package to the same version number, even if o
     [`docker-compose.yml`](./packages/kafka/docker-compose.yml) provides single-node Redpanda +
     Console for the opt-in integration suite (`KAFKA_INTEGRATION=1`).
 
+- **`@moribashi/kafka`**: the consumer side — `kafkaConsumerPlugin`, a second opt-in plugin
+  registering a `consumer` singleton that joins the group on `app.start()` and drains on
+  `app.stop()`. It reuses the `kafkaClient` `kafkaPlugin` already registered, so a service that
+  both produces and consumes has one place for broker config to be wrong.
+  - **Per-message DI scope** — `EVENT_SCOPE` (`Symbol.for('moribashi.scope.event')`), the
+    event-side counterpart of `@moribashi/web`'s request scope. A scope per message carrying
+    `event` (topic, partition, offset, key + raw key, decoded value + raw value, headers,
+    timestamp, correlation id, attempt) and `correlationId`, disposed once the handler settles.
+    Register services with `app.registerInScope(EVENT_SCOPE, …)` and type them by merging into
+    the exported `EventCradle`. A retry gets a *fresh* scope — a handler that threw halfway may
+    have left scoped state half-applied.
+  - **Correlation id** — taken from the `x-correlation-id` header (case-insensitively; the same
+    header the HTTP side uses, so one id spans a request and the events it causes) and generated
+    when absent. Configurable via `correlationIdHeader`.
+  - **At-least-once commit** — the offset moves only after the handler resolves. Auto-commit is
+    explicitly disabled, since `@platformatic/kafka` defaults it to *on*. **Handlers must be
+    idempotent**; a failed commit is logged loudly and the message is redelivered.
+  - **Handler binding, both ways** — an explicit `handlers` topic → DI-name map *and*
+    `*.handler.ts` convention discovery (core's existing `app.scan()` / `formatName` mechanism;
+    the handler declares its own `topic`). Both on by default, explicit wins on conflict, and a
+    topic bound twice by convention is a `HandlerBindingError` at startup rather than
+    last-one-wins. Resolution happens at `onInit`, so `app.scan()` may run after `app.use()`.
+    Subscriptions are derived from the bindings — no second list to keep in sync.
+  - **Failure policy** — `'throw' | 'skip' | { dlq }`, applied identically to decode failures and
+    handler throws. Default is `{ dlq }` when a DLQ topic is configured, `'throw'` otherwise;
+    `failurePolicy: 'skip'` is a one-liner. Bounded in-process retry runs first (`maxRetries`,
+    default 3, exponential backoff capped by `retryMaxBackoffMs`) so a registry blip never
+    reaches the DLQ. `consumer.stats` exposes
+    `{ received, processed, retried, skipped, dlq, failed }`.
+  - **`'throw'` means *stop consuming*, not "propagate and retry"** — with commit-after-handler,
+    naive propagation redelivers the poison message forever. Instead the run loop ends, queued
+    messages are abandoned rather than committed (committing a later offset in the same partition
+    would skip past the uncommitted poison message and lose it), `consumer.finished` rejects, and
+    `onFatal` fires — logging and rethrowing by default so the pod restarts visibly. The partition
+    is wedged either way; this makes it a diagnosable outage instead of a silent one, which is why
+    `{ dlq }` is the better default once a service has somewhere to put failures.
+  - **DLQ messages carry the original bytes**, key included — re-encoding something that failed to
+    decode is impossible — plus failure context in `x-moribashi-dlq-*` headers (original
+    topic/partition/offset, error and error name, attempt count, group id, timestamp). A failing
+    DLQ publish is fatal rather than a silent drop. **The DLQ topic must be declared** in the
+    service's `topics:` values; the cluster does not auto-create.
+  - **Concurrency** — strictly sequential within a partition (ordering is what the partition key
+    buys), parallel across partitions, globally bounded by `concurrency` (default 4).
+  - **Consumers never register schemas** — decoding is a registry lookup by schema id off the
+    Confluent framing, not a registration.
+  - Lifecycle mirrors the producer: `onInit`/`onDestroy` through the app, no signal handlers, and
+    `stop()` waits for handlers already running before disconnecting.
+  - New errors: `SchemaDecodeError`, `EventHandlerError`, `HandlerBindingError` — all
+    `KafkaError`s, all carrying the message coordinates where they have them.
+
 ### Changed
 
 - CI now type-checks `@moribashi/kafka` and runs its test suite.
@@ -67,6 +117,9 @@ lockstep — a release bumps every package to the same version number, even if o
 **No breaking changes.** `@moribashi/kafka` is a new, opt-in package; nothing else changed. Adding
 it to a service means installing it, registering `kafkaPlugin()`, and — only if the service *owns*
 the subjects — dropping `.proto` files in `schemasDir` and passing `registerSchemas: true`.
+Consuming is a second, independent opt-in: register `kafkaConsumerPlugin({ groupId, dlq })` and
+either scan `*.handler.ts` files or pass an explicit `handlers` map. Handlers must be idempotent —
+delivery is at-least-once.
 
 ## [0.3.0] - 2026-07-28
 

@@ -71,3 +71,70 @@ export class SchemaEncodeError extends KafkaError {
     this.schemaId = schemaId;
   }
 }
+
+/**
+ * A consumed message could not be decoded: the registry was unreachable, the
+ * bytes carry no Confluent framing, or the schema id in them is unknown.
+ * Routed through the consumer's failure policy exactly like a handler throw —
+ * an undecodable message is as poisonous as an unprocessable one.
+ */
+export class SchemaDecodeError extends KafkaError {
+  readonly topic: string;
+  readonly partition: number;
+  readonly offset: bigint;
+
+  constructor(
+    message: string,
+    topic: string,
+    partition: number,
+    offset: bigint,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.topic = topic;
+    this.partition = partition;
+    this.offset = offset;
+  }
+}
+
+/**
+ * A handler threw for a message and every retry was exhausted. Carries the
+ * message's coordinates and the attempt count so the failure can be found in
+ * the log and replayed from the DLQ.
+ */
+export class EventHandlerError extends KafkaError {
+  readonly topic: string;
+  readonly partition: number;
+  readonly offset: bigint;
+  readonly attempts: number;
+
+  constructor(
+    message: string,
+    topic: string,
+    partition: number,
+    offset: bigint,
+    attempts: number,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.topic = topic;
+    this.partition = partition;
+    this.offset = offset;
+    this.attempts = attempts;
+  }
+}
+
+/**
+ * Handlers could not be bound to topics at startup — no handler at all, or
+ * two handlers claiming one topic by convention. Thrown from `app.start()`,
+ * never at message time: an ambiguous binding is a wiring bug, and last-one-
+ * wins would make it invisible.
+ */
+export class HandlerBindingError extends KafkaError {
+  readonly topic?: string;
+
+  constructor(message: string, topic?: string, options?: ErrorOptions) {
+    super(message, options);
+    this.topic = topic;
+  }
+}

@@ -4,15 +4,30 @@ import os from 'node:os';
 import path from 'node:path';
 import { asFunction, createApp, Lifetime } from '@moribashi/core';
 import {
+  kafkaConsumerPlugin,
   kafkaPlugin,
+  EVENT_SCOPE,
+  HandlerBindingError,
   KafkaConfigError,
   SchemaRegistrationError,
   type KafkaClient,
+  type EventMessage,
+  type KafkaConsumer,
   type KafkaProducer,
   type Logger,
   type SchemaRegistryClient,
 } from '../index.js';
-import { baseConfig, clearKafkaEnv, fakeClient, fakeRegistry } from './helpers.js';
+import type { RawConsumer, RawDlqProducer } from '../consumer.js';
+import {
+  baseConfig,
+  clearKafkaEnv,
+  fakeClient,
+  fakeMessage,
+  fakeRawConsumer,
+  fakeRawProducer,
+  fakeRegistry,
+  fakeStream,
+} from './helpers.js';
 
 const PROTO = `syntax = "proto3";
 package iam;
@@ -263,6 +278,248 @@ describe('kafkaPlugin — lifecycle', () => {
 
     app = createApp();
     app.use(kafkaPlugin({ client: fakeClient() }));
+    await app.start();
+
+    expect(process.listenerCount('SIGTERM')).toBe(before);
+  });
+});
+
+
+describe('kafkaConsumerPlugin', () => {
+  function consumerDeps(messages = [fakeMessage()]) {
+    const registry = fakeRegistry({ decode: vi.fn(async () => ({ ok: true })) });
+    const stream = fakeStream(messages);
+    const raw = fakeRawConsumer(stream);
+    return {
+      registry,
+      stream,
+      raw,
+      client: fakeClient(baseConfig, registry),
+      seams: {
+        consumer: raw as unknown as RawConsumer,
+        dlqProducer: fakeRawProducer() as unknown as RawDlqProducer,
+        log: silentLog,
+        sleep: async () => {},
+        onFatal: () => {},
+      },
+    };
+  }
+
+  it('registers consumer as a singleton on the root container', async () => {
+    const deps = consumerDeps([]);
+    app = createApp();
+    app.use(
+      kafkaConsumerPlugin({
+        client: deps.client,
+        groupId: 'g',
+        handlers: { t: () => {} },
+        convention: false,
+        ...deps.seams,
+      }),
+    );
+    await app.start();
+
+    const consumer = app.resolve<KafkaConsumer>('consumer');
+    expect(typeof consumer.start).toBe('function');
+    expect(app.resolve<KafkaConsumer>('consumer')).toBe(consumer);
+  });
+
+  it('joins the group during app.start() via onInit', async () => {
+    const deps = consumerDeps([]);
+    app = createApp();
+    app.use(
+      kafkaConsumerPlugin({
+        client: deps.client,
+        groupId: 'g',
+        handlers: { t: () => {} },
+        convention: false,
+        ...deps.seams,
+      }),
+    );
+    await app.start();
+
+    expect(deps.raw.consume).toHaveBeenCalledOnce();
+  });
+
+  it('disconnects during app.stop() via onDestroy', async () => {
+    const deps = consumerDeps([]);
+    app = createApp();
+    app.use(
+      kafkaConsumerPlugin({
+        client: deps.client,
+        groupId: 'g',
+        handlers: { t: () => {} },
+        convention: false,
+        ...deps.seams,
+      }),
+    );
+    await app.start();
+    await app.stop();
+    app = undefined;
+
+    expect(deps.stream.close).toHaveBeenCalled();
+    expect(deps.raw.close).toHaveBeenCalled();
+  });
+
+  it('registers kafkaClient and schemaRegistry when used standalone', async () => {
+    const deps = consumerDeps([]);
+    app = createApp();
+    app.use(
+      kafkaConsumerPlugin({
+        client: deps.client,
+        groupId: 'g',
+        handlers: { t: () => {} },
+        convention: false,
+        ...deps.seams,
+      }),
+    );
+    await app.start();
+
+    expect(app.resolve('kafkaClient')).toBe(deps.client);
+    expect(app.resolve('schemaRegistry')).toBe(deps.client.registry);
+  });
+
+  it('reuses the client kafkaPlugin already registered', async () => {
+    const deps = consumerDeps([]);
+    app = createApp();
+    app.use(kafkaPlugin({ client: deps.client }));
+    app.use(
+      kafkaConsumerPlugin({
+        groupId: 'g',
+        handlers: { t: () => {} },
+        convention: false,
+        ...deps.seams,
+      }),
+    );
+    await app.start();
+
+    // One client, one place for config to be wrong.
+    expect(app.resolve('kafkaClient')).toBe(deps.client);
+    expect(app.resolve<KafkaProducer>('producer')).toBeDefined();
+    expect(app.resolve<KafkaConsumer>('consumer')).toBeDefined();
+  });
+
+  it('carries a distinct plugin name from the producer plugin', () => {
+    const deps = consumerDeps([]);
+    expect(
+      kafkaConsumerPlugin({
+        client: deps.client,
+        groupId: 'g',
+        handlers: { t: () => {} },
+        ...deps.seams,
+      }).name,
+    ).toBe('@moribashi/kafka/consumer');
+  });
+
+  it('binds handlers scanned after app.use() — binding happens at onInit', async () => {
+    const deps = consumerDeps([fakeMessage({ topic: 'late.topic' })]);
+    const handle = vi.fn();
+
+    app = createApp();
+    app.use(
+      kafkaConsumerPlugin({
+        client: deps.client,
+        groupId: 'g',
+        ...deps.seams,
+      }),
+    );
+    // Registered only after the plugin was used, the way app.scan() would.
+    app.container.register({
+      lateHandler: asFunction(() => ({ topic: 'late.topic', handle })).setLifetime(
+        Lifetime.SINGLETON,
+      ),
+    });
+
+    await app.start();
+    await app.resolve<KafkaConsumer>('consumer').finished;
+
+    expect(handle).toHaveBeenCalledOnce();
+    expect(app.resolve<KafkaConsumer>('consumer').topics).toEqual(['late.topic']);
+  });
+
+  it('a double-bound topic fails app.start()', async () => {
+    const deps = consumerDeps([]);
+    app = createApp();
+    app.use(kafkaConsumerPlugin({ client: deps.client, groupId: 'g', ...deps.seams }));
+    for (const name of ['aHandler', 'bHandler']) {
+      app.container.register({
+        [name]: asFunction(() => ({ topic: 'shared.topic', handle: vi.fn() })).setLifetime(
+          Lifetime.SINGLETON,
+        ),
+      });
+    }
+
+    await expect(app.start()).rejects.toBeInstanceOf(HandlerBindingError);
+    app = undefined;
+  });
+
+  it('no handlers at all fails app.start()', async () => {
+    const deps = consumerDeps([]);
+    app = createApp();
+    app.use(kafkaConsumerPlugin({ client: deps.client, groupId: 'g', ...deps.seams }));
+
+    await expect(app.start()).rejects.toBeInstanceOf(HandlerBindingError);
+    app = undefined;
+  });
+
+  it('validates groupId where the plugin is constructed', () => {
+    expect(() => kafkaConsumerPlugin({ groupId: '   ' })).toThrow(/no default/);
+  });
+
+  it('fails at app.use() on bad broker config, not on the first poll', () => {
+    // Broker config can only be validated once we know whether kafkaPlugin
+    // already registered a client — which needs the app.
+    const badApp = createApp();
+    expect(() =>
+      badApp.use(kafkaConsumerPlugin({ groupId: 'g', clientId: 'incomplete' })),
+    ).toThrow(KafkaConfigError);
+  });
+
+  it('runs handlers with services from the event scope', async () => {
+    class Audit {
+      readonly event: EventMessage;
+      constructor({ event }: { event: EventMessage }) {
+        this.event = event;
+      }
+    }
+    const seen: string[] = [];
+    const deps = consumerDeps([fakeMessage({ topic: 't', offset: 5n })]);
+
+    app = createApp();
+    app.registerInScope(EVENT_SCOPE, { audit: Audit });
+    app.use(
+      kafkaConsumerPlugin({
+        client: deps.client,
+        groupId: 'g',
+        convention: false,
+        handlers: {
+          t: (_event, scope) => {
+            seen.push(String(scope.resolve<Audit>('audit').event.offset));
+          },
+        },
+        ...deps.seams,
+      }),
+    );
+    await app.start();
+    await app.resolve<KafkaConsumer>('consumer').finished;
+
+    expect(seen).toEqual(['5']);
+  });
+
+  it('adds no signal handlers of its own', async () => {
+    const before = process.listenerCount('SIGTERM');
+    const deps = consumerDeps([]);
+
+    app = createApp();
+    app.use(
+      kafkaConsumerPlugin({
+        client: deps.client,
+        groupId: 'g',
+        handlers: { t: () => {} },
+        convention: false,
+        ...deps.seams,
+      }),
+    );
     await app.start();
 
     expect(process.listenerCount('SIGTERM')).toBe(before);

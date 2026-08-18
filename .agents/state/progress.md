@@ -1,14 +1,16 @@
 # Progress
 
 ## Current Milestone
-Event transport — `@moribashi/kafka` provides a Kafka/Redpanda producer as a standard plugin:
-protobuf schema registration at boot against the Confluent Schema Registry, per-message keying,
-and disconnection through the app lifecycle. Slated for the 0.4.0 lockstep train.
+Event transport — `@moribashi/kafka` provides both halves of a Kafka/Redpanda transport as standard
+plugins: a producer with protobuf schema registration at boot and per-message keying, and a consumer
+with a per-message DI scope, at-least-once commits, bounded retry, and a configurable
+throw/skip/DLQ failure policy. Slated for the 0.4.0 lockstep train.
 
 ## Recently Completed
 - Built `@moribashi/kafka` (new package, 0.4.0): `kafkaPlugin` registering `kafkaClient`/`schemaRegistry`/`producer` (producer a singleton so `app.stop()` disconnects it), a framework-free core (`createKafkaClient`/`createProducer`) mirroring `createKnex`, declarative `.proto` registration at boot with the registry as the ledger, a separable `checkSchemaCompatibility()` for a future CI gate, per-message partition keys, a TTL-bounded `subject → schemaId` cache, and SASL (SCRAM/PLAIN from env, OAUTHBEARER via an injected `tokenProvider` so there is no `kafka → auth` edge)
-- 209 tests for kafka: 202 unit (config + failure modes, connection-option mapping, schema registration including the incompatible-schema and missing-directory paths, producer encode/send/keying/caching, plugin DI + lifecycle, barrel, plus a dedicated adversarial suite) and 7 opt-in integration tests verified against a real single-node Redpanda + Schema Registry — including the full Confluent protobuf wire round-trip, registration idempotency, and the incompatible-change rejection
-- Producer-only for 0.4.0 by design; `createConsumer()` deferred until the `EventContext` scope story, commit semantics, and a decode-failure policy are settled (see decisions.md)
+- Added the consumer to `@moribashi/kafka`: `kafkaConsumerPlugin` (a second opt-in plugin that reuses an already-registered `kafkaClient`), a per-message DI scope keyed `EVENT_SCOPE` mirroring `WEB_REQUEST_SCOPE`, at-least-once commit-after-handler with autocommit explicitly disabled, bounded in-process retry with exponential backoff, a `'throw' | 'skip' | { dlq }` failure policy covering decode failures and handler throws alike, DLQ routing that preserves the original bytes plus `x-moribashi-dlq-*` failure headers, per-partition sequential / cross-partition parallel processing bounded by `concurrency`, and handler binding by explicit map *and* `*.handler.ts` convention (explicit wins; a convention double-bind is a startup error)
+- Settled the four questions the producer round deferred (scope, commit semantics, failure policy, handler binding) — recorded with rationale in decisions.md, including why `'throw'` had to be defined as *stop consuming* rather than propagate-and-retry, and why queued messages must be abandoned rather than committed once a fatal is in flight
+- Test suite now 357: 347 unit (config, client, schemas, producer, handlers, consumer, plugin, barrel, adversarial) and 10 opt-in integration tests verified against a real single-node Redpanda — the Confluent protobuf wire round-trip, schema registration idempotency, an incompatible-change rejection, a full produce → consume → decode → commit round-trip with committed offsets checked through the Admin API, per-message scoped-service resolution, and a poison message reaching a real DLQ topic with its original bytes and failure headers intact
 - Merged PR #14 (`@moribashi/auth`) after rebasing onto main: fixed a post-rebase type error against PR #9's typed `WebRequestCradle` by declaration-merging `AuthCradle` into it from `@moribashi/auth` (importing the package now types the auth services on `request.scope`); added auth+graphql type-checks and the auth test suite to CI
 - Cut and tagged **0.3.0** (auth package + typed web Fastify surface) — all seven packages live on npm. `@moribashi/auth`'s first publish went through CI via an `NPM_TOKEN` secret fallback in publish.yml (trusted publishing/OIDC can't create a new package). Follow-up: configure a trusted publisher for `@moribashi/auth` on npmjs.com, then delete the `NPM_TOKEN` repo secret so all packages ride the tokenless OIDC path
 - Implemented `@moribashi/auth` (GH #11): `authPlugin` (issuer selection by unverified `iss`, JWKS via static set / direct URI / OIDC discovery, jose-backed verification), `AnonymousPrincipal`/`TokenPrincipal` union, captured-error model (`AuthError` taxonomy — hook never 401s; errors surface from `ensure*` with true cause), `SecurityService` with `AccessLoader` + shared TTL `AccessCache`, and `workloadIdentityPlugin` (`serviceToken` singleton: RFC 8693 exchange of projected SA tokens, refresh-ahead-of-expiry, file re-read on rotation)
@@ -39,9 +41,8 @@ and disconnection through the app lifecycle. Slated for the 0.4.0 lockstep train
 - Gateway subgraph discovery/composition automation — currently a manual step (edit the gateway's `subgraphs` list); deliberately deferred, tracked separately (GH #3, noted in GH #5's scope too)
 - Shared-entity (`@key` / `__resolveReference`) pattern is documented but unimplemented anywhere in this repo — design it once a real cross-subgraph entity need shows up, not speculatively
 - `@moribashi/cli` remains an unimplemented stub — scaffolding tooling for new subgraphs/platforms was explicitly deferred, not in scope for this round
-- Consumer side of `@moribashi/kafka`: `createConsumer()` plus the `EventContext` scope plugin (per-message DI scope), offset/commit semantics, and a decode-failure policy (DLQ vs crash) — deliberately deferred out of 0.4.0
 - Wire `checkSchemaCompatibility()` into CI once the Schema Registry is reachable from GitHub Actions (in-cluster only today), so an incompatible contract change fails a PR instead of a pod
-- Build concrete scope plugins (WebContext via `@moribashi/web`, EventContext for Kafka)
+- Build concrete scope plugins (WebContext via `@moribashi/web`) — the event scope now exists as `EVENT_SCOPE` in `@moribashi/kafka`
 - Add scoped service lifecycle hooks (onInit/onDestroy within scopes)
 - Middleware/interceptor support
 - Migrate example app repos to use `Repo`/`RepoQuery` pattern
