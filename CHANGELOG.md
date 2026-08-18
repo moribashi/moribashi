@@ -3,6 +3,71 @@
 All notable changes to the `@moribashi/*` packages are documented here. Versions are published in
 lockstep — a release bumps every package to the same version number, even if only some of them changed.
 
+## [0.4.0] - 2026-08-18
+
+### Added
+
+- **`@moribashi/kafka`** (new package): Kafka/Redpanda transport as a standard Moribashi plugin —
+  the exact analogue of `@moribashi/pg` for the event side. Zero domain knowledge: no event
+  envelope, no topic naming convention, no aggregate concepts.
+  - `kafkaPlugin` — registers `kafkaClient` (resolved config + connection options + registry
+    client), `schemaRegistry`, and `producer` into the root container. `producer` is a
+    **singleton** so core's lifecycle disconnects it via `onDestroy` on `app.stop()`, the same
+    reason `pg` registers `db` as one.
+  - **Framework-free core** — `createKafkaClient()` / `createProducer()` work with no Moribashi app
+    at all, mirroring `createKnex()`. BYO escape hatches at every layer: an existing client
+    (detected structurally), an existing `@platformatic/kafka` `Producer`, an existing registry
+    client.
+  - **Schema registration at boot** — `.proto` files in `schemasDir` are registered during plugin
+    `register()`, which `app.start()` awaits before resolving any singleton, so an incompatible
+    contract change throws before the app can serve and the pod crashloops. Unchanged schema →
+    the registry returns the existing id, no-op. Missing or empty directory → warning, app starts.
+  - **Declarative, not migrations** — it borrows `SqlMigrationSource`'s *ergonomics* (a directory
+    of files in the service repo, processed at boot) and none of its machinery: no version
+    prefixes, no ordering, no local ledger, no `down`. The registry is the ledger, which is why
+    drift is impossible. Registration is **producer-scoped and opt-in** (`registerSchemas: true`) —
+    a consumer registering a schema is a service asserting a contract it does not own.
+  - `checkSchemaCompatibility()` — the same check as a separable, non-mutating function returning
+    a report instead of throwing, so it can later run in CI and fail a PR rather than a pod. Not
+    wired into CI today (Ravn's registry is in-cluster only); it exists so that wiring needs no
+    new code.
+  - **Per-message keys** — `send()` takes `ProducerMessage[]` where the partition key belongs to
+    the message, not the batch. A batch-wide key mis-partitions every message but the first
+    entity's the moment a batch spans two entities.
+  - **Eager config validation** — env-driven config with no defaults for `clientId`, `brokers`, or
+    `schemaRegistry.url`; a bad value throws a typed `KafkaConfigError` where `kafkaPlugin()` is
+    constructed, not on the first send. `allowAutoTopicCreation` is env-only
+    (`KAFKA_ALLOW_AUTO_TOPIC_CREATION`, local-dev-only) and defaults to `false`, matching the
+    cluster's `auto_create_topics_enabled: false` — code cannot turn it on.
+  - **SASL** — SCRAM-SHA-256/512 and PLAIN entirely from env; OAUTHBEARER via an injected
+    `tokenProvider?: () => Promise<string>` that a service wires to `@moribashi/auth`'s
+    `serviceToken`. **No `kafka → auth` dependency** — that edge would invert the build order. The
+    provider is handed to `@platformatic/kafka` as a credential provider, so it is called per
+    authentication and no token is captured at construction.
+  - **Bounded schema-id cache** — `subject → schemaId` expires on a TTL (default 5 minutes, `0`
+    disables) with in-flight coalescing and explicit `clearSchemaCache(subject?)`. A forever-cache
+    means a registry update is never seen without a pod restart.
+  - **No signal handlers** — the package never registers `SIGTERM`/`SIGINT` or calls
+    `process.exit()`. Disconnection belongs to `app.stop()`, not to a transport library racing the
+    service's own shutdown.
+  - Errors: `KafkaError` base with `KafkaConfigError`, `SchemaRegistrationError` (carries subject
+    and file), `SchemaEncodeError` (carries topic, subject, schema id).
+  - Docs: [`packages/kafka/README.md`](./packages/kafka/README.md). New runtime dependencies:
+    `@platformatic/kafka`, `@kafkajs/confluent-schema-registry`. A
+    [`docker-compose.yml`](./packages/kafka/docker-compose.yml) provides single-node Redpanda +
+    Console for the opt-in integration suite (`KAFKA_INTEGRATION=1`).
+
+### Changed
+
+- CI now type-checks `@moribashi/kafka` and runs its test suite.
+- `CLAUDE.md`'s dependency order is now `common → core → {cli, graphql, kafka, pg, web} → auth`.
+
+### Upgrading
+
+**No breaking changes.** `@moribashi/kafka` is a new, opt-in package; nothing else changed. Adding
+it to a service means installing it, registering `kafkaPlugin()`, and — only if the service *owns*
+the subjects — dropping `.proto` files in `schemasDir` and passing `registerSchemas: true`.
+
 ## [0.3.0] - 2026-07-28
 
 ### Added
