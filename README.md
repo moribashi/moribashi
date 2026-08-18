@@ -12,6 +12,7 @@ Lightweight TypeScript dependency injection framework built on [Awilix](https://
 | `@moribashi/web` | Fastify web server integration with per-request scopes |
 | `@moribashi/pg` | PostgreSQL integration via Knex with migrations, camelCase query helper, and convention-based repositories |
 | `@moribashi/graphql` | GraphQL via Mercurius — standalone or as a federation subgraph (`federated: true`), plus `gatewayPlugin()` for composing subgraphs into a supergraph |
+| `@moribashi/kafka` | Kafka/Redpanda transport: schema-aware producer, protobuf schema registration at boot, SASL/OAUTHBEARER via an injected token provider |
 | `@moribashi/auth` | OIDC bearer validation (multi-issuer), `Principal` + `SecurityService` in the request scope, optional Kubernetes workload identity via RFC 8693 token exchange |
 
 ## Installation

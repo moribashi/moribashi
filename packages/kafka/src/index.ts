@@ -1,0 +1,61 @@
+export {
+  type KafkaConfig,
+  type KafkaConfigInput,
+  type SaslConfig,
+  type SaslMechanism,
+  type OauthBearerSaslConfig,
+  type PasswordSaslConfig,
+  type SchemaRegistryConfig,
+  type TlsConfig,
+  type TokenProvider,
+  SASL_MECHANISMS,
+  createKafkaConfig,
+} from './config.js';
+
+export {
+  type KafkaClient,
+  type KafkaConnectionOptions,
+  type SchemaRegistryClient,
+  buildConnectionOptions,
+  createKafkaClient,
+  createSchemaRegistry,
+  isKafkaClient,
+} from './client.js';
+
+export {
+  type CheckSchemaCompatibilityOptions,
+  type Logger,
+  type ReadSchemasOptions,
+  type RegisterSchemasOptions,
+  type RegisteredSchema,
+  type SchemaCompatibilityResult,
+  type SchemaSource,
+  SCHEMA_FILE_EXTENSION,
+  checkSchemaCompatibility,
+  readSchemaSources,
+  registerSchemas,
+  subjectForFile,
+  subjectForTopic,
+} from './schemas.js';
+
+export {
+  type CreateProducerOptions,
+  type KafkaProducer,
+  type ProducerMessage,
+  type RawProducer,
+  type SendOptions,
+  createProducer,
+} from './producer.js';
+
+export { type KafkaCradle, type KafkaPluginOptions, kafkaPlugin } from './plugin.js';
+
+export {
+  KafkaError,
+  KafkaConfigError,
+  SchemaEncodeError,
+  SchemaRegistrationError,
+} from './errors.js';
+
+export function diagnostics() {
+  return { module: '@moribashi/kafka' };
+}
