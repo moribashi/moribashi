@@ -165,40 +165,43 @@ jobs:
             fi
           done
 
-      # ── Adopt any package that is still token-dependent ────────────────────
+      # ── Which packages still need a human, and why CI cannot do it ─────────
       #
       # A package bootstrapped by token stays token-dependent until someone
-      # configures trusted publishing for it, and nothing announces that it
-      # hasn't been done. @moribashi/auth is the live example: new in 0.3.0,
-      # bootstrapped with a token, never adopted — it is the only package with
-      # no provenance attestation, and it stayed that way for a whole release,
-      # surfacing only when the token grew a 2FA requirement.
+      # configures trusted publishing for it, and nothing announces that it was
+      # never done. @moribashi/auth proves the point: new in 0.3.0, bootstrapped
+      # by token, never adopted, and it stayed the only package without a
+      # provenance attestation for two whole releases — surfacing only when the
+      # token grew a 2FA requirement and auth started failing EOTP.
       #
-      # Absence of a provenance attestation is the tell: it means the package
-      # has never once published over OIDC. Packages that already have one are
-      # left strictly alone. Requires the package to exist, so this cannot help
-      # a first publish — that is what the bootstrap step above is for.
+      # There WAS a step here that tried to adopt them automatically with
+      # `npm trust github`. It cannot work, by design:
       #
-      # Best-effort: `npm trust` may itself require an OTP, so this must never
-      # fail the run.
-      - name: Adopt token-dependent packages into trusted publishing
-        continue-on-error: true
+      #   403 POST /-/package/@moribashi%2fauth/trust
+      #   "Granular access tokens that bypass two-factor authentication may not
+      #    perform this action."
+      #
+      # Configuring trusted publishing is an account-level security change, so
+      # npm requires a human with 2FA — which is exactly the property that makes
+      # trusted publishing worth having. A CI token that could grant itself
+      # trust would defeat it. So this reports and leaves it to a person.
+      - name: Report packages still publishing by token
         run: |
+          needs=""
           for dir in packages/*/; do
             name=$(node -p "require('./${dir}package.json').name")
-            npm view "$name" versions >/dev/null 2>&1 || { echo "· $name not on the registry — nothing to adopt"; continue; }
-
-            if [ -n "$(npm view "$name" dist.attestations 2>/dev/null)" ]; then
-              echo "· $name already publishes over OIDC — leaving alone"
-              continue
-            fi
-
-            echo "· $name has never published over OIDC — adopting"
-            npm trust list "$name" 2>&1 | sed 's/^/    list: /' || true
-            npm trust github "$name" --file publish.yml --repo moribashi/moribashi \
-              --allow-publish -y \
-              || echo "    ✗ could not configure $name — it stays token-dependent"
+            npm view "$name" versions >/dev/null 2>&1 || continue
+            [ -n "$(npm view "$name" dist.attestations 2>/dev/null)" ] && continue
+            needs="$needs $name"
           done
+          if [ -n "$needs" ]; then
+            echo "::warning::Publishing by token, not trusted publishing:$needs"
+            echo "Configure at npmjs.com -> Packages -> <package> -> Settings -> Trusted publishing"
+            echo "  repository: moribashi/moribashi   workflow: publish.yml"
+            echo "Until then these depend on NPM_TOKEN and lose provenance."
+          else
+            echo "Every package publishes over OIDC with provenance."
+          fi
 
       - name: Publish to npmjs (trusted publishing)
         run: |
