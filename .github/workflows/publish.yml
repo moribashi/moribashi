@@ -108,15 +108,46 @@ jobs:
       # rejected". Blanking them keeps npm from trying OIDC at all, so it uses
       # the token in ~/.npmrc. Provenance is off here for the same reason: it is
       # an OIDC feature. Packages that already exist keep both.
-      - name: Bootstrap brand-new packages (token auth, no OIDC)
+      - name: Configure bootstrap token
         env:
           NPM_TOKEN: ${{ secrets.TEMP_NPMJS_TOKEN || secrets.NPM_TOKEN }}
         run: |
           if [ -z "$NPM_TOKEN" ]; then
-            echo "No bootstrap token available — skipping (OIDC handles existing packages)."
+            echo "No bootstrap token available — OIDC only."
             exit 0
           fi
           echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
+          echo "Bootstrap token configured."
+
+      # A scoped package created by `npm publish --access public` can still land
+      # RESTRICTED, and the failure is invisible: npm prints `+ pkg@version` and
+      # exits 0, while the registry returns 404 to everyone else. @moribashi/kafka
+      # did exactly that — present in `npm access list packages @moribashi`,
+      # 404 on the registry document, 403 on the npmjs.com page.
+      #
+      # That also poisons the "does this package exist?" check below, which reads
+      # the registry as an anonymous user would: a restricted package looks brand
+      # new forever, so every run retries a publish that cannot succeed.
+      #
+      # Setting status explicitly is idempotent and cheap. Run it BEFORE the
+      # detection steps so they see the truth.
+      - name: Ensure packages are public
+        continue-on-error: true
+        run: |
+          for dir in packages/*/; do
+            name=$(node -p "require('./${dir}package.json').name")
+            npm access list packages @moribashi 2>/dev/null | grep -q "^${name}:" || { echo "· $name not created yet"; continue; }
+            current=$(npm access get status "$name" 2>/dev/null || echo unknown)
+            if [ "$current" = "public" ]; then
+              echo "· $name already public"
+            else
+              echo "· $name is '$current' — setting public"
+              npm access set status=public "$name" && echo "  ✓ now public" || echo "  ✗ could not change"
+            fi
+          done
+
+      - name: Bootstrap brand-new packages (token auth, no OIDC)
+        run: |
 
           # Never abort the run here. A bootstrap needs a token that bypasses
           # 2FA (Classic *Automation*, or a granular token — a Classic "Publish"
