@@ -147,9 +147,17 @@ jobs:
               echo "· $name exists — leaving to OIDC"
             else
               echo "· $name is NEW — bootstrapping $version with token auth"
+              # pnpm publish, NOT npm publish. Internal deps are declared
+              # `@moribashi/core: workspace:*`, and only pnpm rewrites that to a
+              # real version on publish. npm ships the literal string, producing
+              # a package that installs with:
+              #   EUNSUPPORTEDPROTOCOL  Unsupported URL Type "workspace:"
+              # It publishes cleanly and is broken for every consumer — and the
+              # version can never be reused, so the only fix is a new release.
+              # @moribashi/kafka@0.4.0 was lost exactly this way.
               if ( cd "$dir" \
                    && ACTIONS_ID_TOKEN_REQUEST_URL= ACTIONS_ID_TOKEN_REQUEST_TOKEN= \
-                      npm publish --access public --provenance=false ); then
+                      pnpm publish --access public --no-git-checks --no-provenance ); then
                 echo "  ✓ $name bootstrapped"
               else
                 echo "  ✗ $name could NOT be bootstrapped — continuing so the rest still publish"
@@ -214,19 +222,31 @@ jobs:
       # missing one fails for every consumer.
       - name: Verify every package published
         run: |
-          missing=""
-          for dir in packages/*/; do
-            name=$(node -p "require('./${dir}package.json').name")
-            version=$(node -p "require('./${dir}package.json').version")
-            if npm view "$name@$version" version >/dev/null 2>&1; then
-              echo "✓ $name@$version"
-            else
-              echo "✗ $name@$version MISSING"
-              missing="$missing $name@$version"
-            fi
+          # Retry, because a package is not readable the instant it publishes.
+          # Without this the step reports packages as MISSING seconds after they
+          # went out — it did exactly that for auth and pg on the 0.4.1 run, both
+          # of which were live a minute later. A false red on a release that
+          # actually succeeded is worse than a slow green: it invites someone to
+          # "fix" a publish that already worked.
+          for attempt in 1 2 3 4 5 6; do
+            missing=""
+            for dir in packages/*/; do
+              name=$(node -p "require('./${dir}package.json').name")
+              version=$(node -p "require('./${dir}package.json').version")
+              npm view "$name@$version" version >/dev/null 2>&1 || missing="$missing $name@$version"
+            done
+            [ -z "$missing" ] && break
+            echo "attempt $attempt — still settling:$missing"
+            [ "$attempt" -lt 6 ] && sleep 30
           done
+
           if [ -n "$missing" ]; then
             echo "::error::Release incomplete — unpublished:$missing"
             exit 1
           fi
+          for dir in packages/*/; do
+            name=$(node -p "require('./${dir}package.json').name")
+            version=$(node -p "require('./${dir}package.json').version")
+            echo "✓ $name@$version"
+          done
           echo "All packages published."
