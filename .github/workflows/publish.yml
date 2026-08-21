@@ -222,19 +222,31 @@ jobs:
       # missing one fails for every consumer.
       - name: Verify every package published
         run: |
-          missing=""
-          for dir in packages/*/; do
-            name=$(node -p "require('./${dir}package.json').name")
-            version=$(node -p "require('./${dir}package.json').version")
-            if npm view "$name@$version" version >/dev/null 2>&1; then
-              echo "✓ $name@$version"
-            else
-              echo "✗ $name@$version MISSING"
-              missing="$missing $name@$version"
-            fi
+          # Retry, because a package is not readable the instant it publishes.
+          # Without this the step reports packages as MISSING seconds after they
+          # went out — it did exactly that for auth and pg on the 0.4.1 run, both
+          # of which were live a minute later. A false red on a release that
+          # actually succeeded is worse than a slow green: it invites someone to
+          # "fix" a publish that already worked.
+          for attempt in 1 2 3 4 5 6; do
+            missing=""
+            for dir in packages/*/; do
+              name=$(node -p "require('./${dir}package.json').name")
+              version=$(node -p "require('./${dir}package.json').version")
+              npm view "$name@$version" version >/dev/null 2>&1 || missing="$missing $name@$version"
+            done
+            [ -z "$missing" ] && break
+            echo "attempt $attempt — still settling:$missing"
+            [ "$attempt" -lt 6 ] && sleep 30
           done
+
           if [ -n "$missing" ]; then
             echo "::error::Release incomplete — unpublished:$missing"
             exit 1
           fi
+          for dir in packages/*/; do
+            name=$(node -p "require('./${dir}package.json').name")
+            version=$(node -p "require('./${dir}package.json').version")
+            echo "✓ $name@$version"
+          done
           echo "All packages published."
