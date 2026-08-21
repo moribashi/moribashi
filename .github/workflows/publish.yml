@@ -171,7 +171,8 @@ jobs:
 
             echo "· $name has never published over OIDC — adopting"
             npm trust list "$name" 2>&1 | sed 's/^/    list: /' || true
-            npm trust github "$name" --file publish.yml --repo moribashi/moribashi -y \
+            npm trust github "$name" --file publish.yml --repo moribashi/moribashi \
+              --allow-publish -y \
               || echo "    ✗ could not configure $name — it stays token-dependent"
           done
 
