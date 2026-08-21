@@ -93,17 +93,140 @@ jobs:
       - name: Build all packages
         run: pnpm run build
 
-      # Trusted publishing (OIDC) can't create a brand-new package — its first
-      # publish needs a token. No-op when the NPM_TOKEN secret is absent, so
-      # established packages keep publishing via OIDC.
-      - name: Configure npm token (first-publish fallback)
+      # ── First publish of a NEW package needs a token; everything else uses OIDC
+      #
+      # Trusted publishing keeps its config on the package's settings page at
+      # npmjs.com, so it cannot be configured for a package that does not exist
+      # yet (npm/cli#8544 — PyPI has "pending publishers" for this, npm does
+      # not). A brand-new package therefore needs token auth exactly once. After
+      # that, configure trusted publishing on it and this step stops touching it.
+      #
+      # Why the ID-token vars are blanked below: when npm attempts OIDC and the
+      # registry has no trusted publisher for that package, the request is
+      # treated as ANONYMOUS and comes back as a bare `404 Not Found` on the PUT
+      # (npm/cli#9088) — which reads like "package missing" and is really "auth
+      # rejected". Blanking them keeps npm from trying OIDC at all, so it uses
+      # the token in ~/.npmrc. Provenance is off here for the same reason: it is
+      # an OIDC feature. Packages that already exist keep both.
+      - name: Configure bootstrap token
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.TEMP_NPMJS_TOKEN || secrets.NPM_TOKEN }}
         run: |
-          if [ -n "$NPM_TOKEN" ]; then
-            echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
-            echo "Token fallback enabled"
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "No bootstrap token available — OIDC only."
+            exit 0
           fi
+          echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
+          echo "Bootstrap token configured."
 
-      - name: Publish to npmjs
-        run: pnpm -r --filter './packages/**' publish --access public --no-git-checks
+      # NOTE on a false alarm, since it will look like a bug next time:
+      # a NEWLY CREATED package stays 404 on the public registry and 403 on
+      # npmjs.com for a few minutes after a successful publish, while already
+      # showing up in `npm access list packages <scope>` (which reads
+      # authenticated). It looks exactly like the package landed restricted.
+      # It isn't — it's CDN propagation, and it clears on its own. Don't add an
+      # `npm access set status=public` step for it: the token gets 403 on
+      # packages that are already public, so the "fix" only adds noise.
+      #
+      # The practical consequence is that the verification step at the end can
+      # fail on a package that published seconds earlier. Re-run before
+      # investigating.
+      - name: Bootstrap brand-new packages (token auth, no OIDC)
+        run: |
+
+          # Never abort the run here. A bootstrap needs a token that bypasses
+          # 2FA (Classic *Automation*, or a granular token — a Classic "Publish"
+          # token fails EOTP asking for a one-time password no CI can supply).
+          # If that token is wrong, exactly one package is stuck, and it must not
+          # take the other seven down with it: they publish via OIDC and need no
+          # token at all. The final step below still fails the run.
+          for dir in packages/*/; do
+            name=$(node -p "require('./${dir}package.json').name")
+            version=$(node -p "require('./${dir}package.json').version")
+            if npm view "$name" versions >/dev/null 2>&1; then
+              echo "· $name exists — leaving to OIDC"
+            else
+              echo "· $name is NEW — bootstrapping $version with token auth"
+              if ( cd "$dir" \
+                   && ACTIONS_ID_TOKEN_REQUEST_URL= ACTIONS_ID_TOKEN_REQUEST_TOKEN= \
+                      npm publish --access public --provenance=false ); then
+                echo "  ✓ $name bootstrapped"
+              else
+                echo "  ✗ $name could NOT be bootstrapped — continuing so the rest still publish"
+              fi
+            fi
+          done
+
+      # ── Adopt any package that is still token-dependent ────────────────────
+      #
+      # A package bootstrapped by token stays token-dependent until someone
+      # configures trusted publishing for it, and nothing announces that it
+      # hasn't been done. @moribashi/auth is the live example: new in 0.3.0,
+      # bootstrapped with a token, never adopted — it is the only package with
+      # no provenance attestation, and it stayed that way for a whole release,
+      # surfacing only when the token grew a 2FA requirement.
+      #
+      # Absence of a provenance attestation is the tell: it means the package
+      # has never once published over OIDC. Packages that already have one are
+      # left strictly alone. Requires the package to exist, so this cannot help
+      # a first publish — that is what the bootstrap step above is for.
+      #
+      # Best-effort: `npm trust` may itself require an OTP, so this must never
+      # fail the run.
+      - name: Adopt token-dependent packages into trusted publishing
+        continue-on-error: true
+        run: |
+          for dir in packages/*/; do
+            name=$(node -p "require('./${dir}package.json').name")
+            npm view "$name" versions >/dev/null 2>&1 || { echo "· $name not on the registry — nothing to adopt"; continue; }
+
+            if [ -n "$(npm view "$name" dist.attestations 2>/dev/null)" ]; then
+              echo "· $name already publishes over OIDC — leaving alone"
+              continue
+            fi
+
+            echo "· $name has never published over OIDC — adopting"
+            npm trust list "$name" 2>&1 | sed 's/^/    list: /' || true
+            npm trust github "$name" --file publish.yml --repo moribashi/moribashi \
+              --allow-publish -y \
+              || echo "    ✗ could not configure $name — it stays token-dependent"
+          done
+
+      - name: Publish to npmjs (trusted publishing)
+        run: |
+          # Exclude anything still missing from the registry. pnpm would try it,
+          # get the anonymous-404 that an unconfigured trusted publisher
+          # produces, and abort — starving every package that comes after it in
+          # the topological order. Self-clearing: once a package exists, nothing
+          # is excluded. Packages already at this version are skipped by pnpm.
+          filters=""
+          for dir in packages/*/; do
+            name=$(node -p "require('./${dir}package.json').name")
+            if ! npm view "$name" versions >/dev/null 2>&1; then
+              echo "excluding $name — not on the registry yet"
+              filters="$filters --filter=!$name"
+            fi
+          done
+          pnpm -r --filter './packages/**' $filters publish --access public --no-git-checks
+
+      # The run must go red if the release is incomplete. Publishing seven of
+      # eight is a broken lockstep release, not a success — `npm i` of the
+      # missing one fails for every consumer.
+      - name: Verify every package published
+        run: |
+          missing=""
+          for dir in packages/*/; do
+            name=$(node -p "require('./${dir}package.json').name")
+            version=$(node -p "require('./${dir}package.json').version")
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "✓ $name@$version"
+            else
+              echo "✗ $name@$version MISSING"
+              missing="$missing $name@$version"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Release incomplete — unpublished:$missing"
+            exit 1
+          fi
+          echo "All packages published."
