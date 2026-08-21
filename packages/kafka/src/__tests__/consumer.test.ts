@@ -225,7 +225,9 @@ describe('decoding and the event', () => {
 
     await drain(consumer);
 
-    expect(registry.decode).toHaveBeenCalledWith(Buffer.from([0, 0, 0, 0, 1, 9]));
+    // Topic-scoped: the deserializer derives the subject from it, then
+    // resolves the writer's schema from the id in the framing.
+    expect(registry.decode).toHaveBeenCalledWith('t', Buffer.from([0, 0, 0, 0, 1, 9]));
     expect(handle.mock.calls[0][0]).toMatchObject({ value: { id: 'a1' } });
   });
 

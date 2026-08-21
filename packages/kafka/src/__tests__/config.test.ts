@@ -23,6 +23,7 @@ describe('createKafkaConfig', () => {
         schemaRegistry: { url: 'http://redpanda:8081' },
         schemasDir: './schemas',
         allowAutoTopicCreation: false,
+        schemaCacheTtlMs: 5 * 60_000,
       });
     });
 

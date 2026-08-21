@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs';
 import type { ConnectionOptions as TlsConnectionOptions } from 'node:tls';
-import { SchemaRegistry } from '@kafkajs/confluent-schema-registry';
 import type { SASLOptions } from '@platformatic/kafka';
 import {
   createKafkaConfig,
@@ -10,22 +9,9 @@ import {
   type TlsConfig,
 } from './config.js';
 import { KafkaConfigError } from './errors.js';
+import { createSchemaRegistry, type SchemaRegistryClient } from './registry.js';
 
-/**
- * The subset of `@kafkajs/confluent-schema-registry`'s `SchemaRegistry` this
- * package uses. Narrowing it here keeps the seam small enough to fake in a
- * test without standing up a registry, and documents exactly how much of that
- * library we depend on.
- */
-export interface SchemaRegistryClient {
-  register(
-    schema: { type: string; schema: string },
-    userOpts: { subject: string },
-  ): Promise<{ id: number }>;
-  encode(registryId: number, payload: unknown): Promise<Buffer>;
-  decode(buffer: Buffer): Promise<unknown>;
-  getLatestSchemaId(subject: string): Promise<number>;
-}
+export { createSchemaRegistry, type SchemaRegistryClient };
 
 /**
  * Options every `@platformatic/kafka` client built from this client is
@@ -118,14 +104,6 @@ export function isKafkaClient(value: unknown): value is KafkaClient {
     typeof candidate.registry === 'object' &&
     candidate.registry !== null
   );
-}
-
-export function createSchemaRegistry(config: KafkaConfig): SchemaRegistryClient {
-  return new SchemaRegistry({
-    host: config.schemaRegistry.url,
-    clientId: config.clientId,
-    ...(config.schemaRegistry.auth ? { auth: config.schemaRegistry.auth } : {}),
-  });
 }
 
 /**

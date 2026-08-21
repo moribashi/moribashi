@@ -25,6 +25,7 @@ describe('index re-exports', () => {
     'isEventHandler',
     'correlationIdFrom',
     'logError',
+    'readWirePrefix',
   ])('exports %s as a function', name => {
     expect(typeof barrel[name as keyof typeof barrel]).toBe('function');
   });
@@ -83,8 +84,10 @@ describe('index re-exports', () => {
         'isKafkaClient',
         'kafkaConsumerPlugin',
         'kafkaPlugin',
+        'MAGIC_BYTE',
         'logError',
         'readSchemaSources',
+        'readWirePrefix',
         'registerSchemas',
         'resolveHandlerBindings',
         'subjectForFile',

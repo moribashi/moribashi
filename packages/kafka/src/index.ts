@@ -8,6 +8,7 @@ export {
   type SchemaRegistryConfig,
   type TlsConfig,
   type TokenProvider,
+  type TopicMessageTypes,
   SASL_MECHANISMS,
   createKafkaConfig,
 } from './config.js';
@@ -15,12 +16,18 @@ export {
 export {
   type KafkaClient,
   type KafkaConnectionOptions,
-  type SchemaRegistryClient,
   buildConnectionOptions,
   createKafkaClient,
-  createSchemaRegistry,
   isKafkaClient,
 } from './client.js';
+
+export {
+  type SchemaRegistryClient,
+  type WirePrefix,
+  MAGIC_BYTE,
+  createSchemaRegistry,
+  readWirePrefix,
+} from './registry.js';
 
 export {
   type CheckSchemaCompatibilityOptions,

@@ -31,7 +31,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@kafkajs/confluent-schema-registry": "^4.1.0",
+    "@bufbuild/protobuf": "^2.0.0",
+    "@confluentinc/schemaregistry": "^1.10.0",
     "@moribashi/core": "workspace:*",
     "@platformatic/kafka": "^2.9.0"
   },

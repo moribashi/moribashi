@@ -1,8 +1,9 @@
 import { Producer, type ProduceResult } from '@platformatic/kafka';
-import { createKafkaClient, type KafkaClient, type SchemaRegistryClient } from './client.js';
+import { createKafkaClient, type KafkaClient } from './client.js';
 import type { KafkaConfigInput } from './config.js';
 import { SchemaEncodeError } from './errors.js';
-import { subjectForTopic } from './schemas.js';
+import type { SchemaRegistryClient } from './registry.js';
+import { subjectForTopic } from './subjects.js';
 
 /**
  * The `@platformatic/kafka` producer this package builds. Values and keys are
@@ -26,7 +27,15 @@ const toBuffer = (data?: string): Buffer | undefined =>
  */
 export interface ProducerMessage<T = unknown> {
   topic: string;
-  /** Encoded against the topic's registered value schema. */
+  /**
+   * Encoded against the topic's registered value schema.
+   *
+   * Normally a Buf-generated message (`create(IdentityCreatedSchema, {…})`),
+   * which is what makes a payload that diverges from the `.proto` a compile
+   * error. A plain object is also accepted and is initialised into the type
+   * declared for this topic in `messages` — using the **generated** field
+   * names (`displayName`, not `display_name`).
+   */
   value: T;
   /** Partition key. Strings are UTF-8 encoded. Omit for round-robin. */
   key?: string | Buffer;
@@ -50,7 +59,14 @@ export interface KafkaProducer {
     messages: ProducerMessage<T> | ProducerMessage<T>[],
     options?: SendOptions,
   ): Promise<ProduceResult>;
-  /** Drops cached schema ids so the next send re-resolves them. */
+  /**
+   * Drops cached schema lookups so the next send re-resolves them.
+   *
+   * The cache now lives inside `@confluentinc/schemaregistry`, which keys it
+   * by more than the subject, so this clears **all** of it. `subject` is still
+   * accepted and still names what the caller cares about, but it no longer
+   * narrows what is dropped.
+   */
   clearSchemaCache(subject?: string): void;
   /** Escape hatch: the underlying `@platformatic/kafka` producer. */
   readonly producer: RawProducer;
@@ -66,22 +82,6 @@ export interface CreateProducerOptions {
   registry?: SchemaRegistryClient;
   /** BYO `@platformatic/kafka` producer. Defaults to one built from config. */
   producer?: RawProducer;
-  /**
-   * How long a resolved `subject → schemaId` stays cached, in ms. Default
-   * 5 minutes; `0` disables caching.
-   */
-  schemaCacheTtlMs?: number;
-  /** Override the topic → subject derivation. Default `TopicNameStrategy`. */
-  subjectFor?: (topic: string) => string;
-  /** Test seam. */
-  now?: () => number;
-}
-
-const DEFAULT_SCHEMA_CACHE_TTL_MS = 5 * 60_000;
-
-interface CacheEntry {
-  id: number;
-  expiresAt: number;
 }
 
 /**
@@ -95,9 +95,7 @@ interface CacheEntry {
 export function createProducer(opts: CreateProducerOptions = {}): KafkaProducer {
   const client = createKafkaClient(opts.client);
   const registry = opts.registry ?? client.registry;
-  const subjectFor = opts.subjectFor ?? subjectForTopic;
-  const now = opts.now ?? Date.now;
-  const ttlMs = opts.schemaCacheTtlMs ?? DEFAULT_SCHEMA_CACHE_TTL_MS;
+  const subjectFor = client.config.subjectFor ?? subjectForTopic;
 
   const producer: RawProducer =
     opts.producer ??
@@ -111,57 +109,23 @@ export function createProducer(opts: CreateProducerOptions = {}): KafkaProducer 
       },
     });
 
-  // `subject → schemaId`, bounded by a TTL. An unbounded forever-cache means a
-  // registry update is never picked up without a pod restart; the TTL keeps
-  // the steady-state cost at one lookup per subject per period, and
-  // `clearSchemaCache()` gives callers an explicit invalidation lever.
-  const schemaIds = new Map<string, CacheEntry>();
-  const inflight = new Map<string, Promise<number>>();
-
-  async function schemaIdFor(subject: string): Promise<number> {
-    const cached = schemaIds.get(subject);
-    if (cached && cached.expiresAt > now()) return cached.id;
-
-    // Coalesce concurrent lookups; drop the marker either way so a failure
-    // does not poison later sends.
-    let pending = inflight.get(subject);
-    if (!pending) {
-      pending = registry
-        .getLatestSchemaId(subject)
-        .then(id => {
-          if (ttlMs > 0) schemaIds.set(subject, { id, expiresAt: now() + ttlMs });
-          return id;
-        })
-        .finally(() => inflight.delete(subject));
-      inflight.set(subject, pending);
-    }
-    return pending;
-  }
-
+  /**
+   * Confluent framing is applied by `@confluentinc/schemaregistry`, never
+   * hand-rolled here: `magic | schemaId | message-index array | payload`, with
+   * the index array being precisely the part the previous library omitted.
+   * Schema-id resolution and its TTL cache live in that client too
+   * (`schemaCacheTtlMs`), which is why this function no longer keeps one.
+   */
   async function encode<T>(message: ProducerMessage<T>): Promise<Buffer> {
-    const subject = subjectFor(message.topic);
-
-    let schemaId: number;
     try {
-      schemaId = await schemaIdFor(subject);
+      return await registry.encode(message.topic, message.value);
     } catch (cause) {
-      throw new SchemaEncodeError(
-        `No schema available for subject "${subject}": ${(cause as Error).message}`,
-        message.topic,
-        subject,
-        undefined,
-        { cause },
-      );
-    }
-
-    try {
-      return await registry.encode(schemaId, message.value);
-    } catch (cause) {
+      if (cause instanceof SchemaEncodeError) throw cause;
       throw new SchemaEncodeError(
         `Failed to encode message for topic "${message.topic}": ${(cause as Error).message}`,
         message.topic,
-        subject,
-        schemaId,
+        subjectFor(message.topic),
+        undefined,
         { cause },
       );
     }
@@ -202,9 +166,8 @@ export function createProducer(opts: CreateProducerOptions = {}): KafkaProducer 
       });
     },
 
-    clearSchemaCache(subject?: string) {
-      if (subject === undefined) schemaIds.clear();
-      else schemaIds.delete(subject);
+    clearSchemaCache(_subject?: string) {
+      registry.clearCaches();
     },
 
     async close() {

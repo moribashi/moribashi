@@ -137,7 +137,7 @@ describe('readSchemaSources', () => {
 describe('registerSchemas', () => {
   it('registers every .proto as PROTOBUF under its subject', async () => {
     await writeProto('iam.identity.created.v1-value.proto');
-    const registry = fakeRegistry({ register: vi.fn(async () => ({ id: 7 })) });
+    const registry = fakeRegistry({ register: vi.fn(async () => 7) });
 
     const registered = await registerSchemas({
       client: fakeClient(baseConfig, registry),
@@ -149,8 +149,8 @@ describe('registerSchemas', () => {
       { subject: 'iam.identity.created.v1-value', id: 7, file: 'iam.identity.created.v1-value.proto' },
     ]);
     expect(registry.register).toHaveBeenCalledWith(
-      { type: 'PROTOBUF', schema: expect.stringContaining('message IdentityCreated') },
-      { subject: 'iam.identity.created.v1-value' },
+      'iam.identity.created.v1-value',
+      expect.stringContaining('message IdentityCreated'),
     );
   });
 
@@ -172,7 +172,7 @@ describe('registerSchemas', () => {
     await writeProto('b-value.proto');
     await writeProto('a-value.proto');
     let next = 100;
-    const registry = fakeRegistry({ register: vi.fn(async () => ({ id: next++ })) });
+    const registry = fakeRegistry({ register: vi.fn(async () => next++) });
 
     const registered = await registerSchemas({
       client: fakeClient(baseConfig, registry),
@@ -265,7 +265,7 @@ describe('registerSchemas', () => {
   it('accepts a standalone registry override', async () => {
     await writeProto('a-value.proto');
     const clientRegistry = fakeRegistry();
-    const override = fakeRegistry({ register: vi.fn(async () => ({ id: 99 })) });
+    const override = fakeRegistry({ register: vi.fn(async () => 99) });
 
     const registered = await registerSchemas({
       client: fakeClient(baseConfig, clientRegistry),
