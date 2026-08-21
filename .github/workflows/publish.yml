@@ -147,9 +147,17 @@ jobs:
               echo "· $name exists — leaving to OIDC"
             else
               echo "· $name is NEW — bootstrapping $version with token auth"
+              # pnpm publish, NOT npm publish. Internal deps are declared
+              # `@moribashi/core: workspace:*`, and only pnpm rewrites that to a
+              # real version on publish. npm ships the literal string, producing
+              # a package that installs with:
+              #   EUNSUPPORTEDPROTOCOL  Unsupported URL Type "workspace:"
+              # It publishes cleanly and is broken for every consumer — and the
+              # version can never be reused, so the only fix is a new release.
+              # @moribashi/kafka@0.4.0 was lost exactly this way.
               if ( cd "$dir" \
                    && ACTIONS_ID_TOKEN_REQUEST_URL= ACTIONS_ID_TOKEN_REQUEST_TOKEN= \
-                      npm publish --access public --provenance=false ); then
+                      pnpm publish --access public --no-git-checks --no-provenance ); then
                 echo "  ✓ $name bootstrapped"
               else
                 echo "  ✗ $name could NOT be bootstrapped — continuing so the rest still publish"
