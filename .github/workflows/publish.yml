@@ -119,33 +119,18 @@ jobs:
           echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
           echo "Bootstrap token configured."
 
-      # A scoped package created by `npm publish --access public` can still land
-      # RESTRICTED, and the failure is invisible: npm prints `+ pkg@version` and
-      # exits 0, while the registry returns 404 to everyone else. @moribashi/kafka
-      # did exactly that — present in `npm access list packages @moribashi`,
-      # 404 on the registry document, 403 on the npmjs.com page.
+      # NOTE on a false alarm, since it will look like a bug next time:
+      # a NEWLY CREATED package stays 404 on the public registry and 403 on
+      # npmjs.com for a few minutes after a successful publish, while already
+      # showing up in `npm access list packages <scope>` (which reads
+      # authenticated). It looks exactly like the package landed restricted.
+      # It isn't — it's CDN propagation, and it clears on its own. Don't add an
+      # `npm access set status=public` step for it: the token gets 403 on
+      # packages that are already public, so the "fix" only adds noise.
       #
-      # That also poisons the "does this package exist?" check below, which reads
-      # the registry as an anonymous user would: a restricted package looks brand
-      # new forever, so every run retries a publish that cannot succeed.
-      #
-      # Setting status explicitly is idempotent and cheap. Run it BEFORE the
-      # detection steps so they see the truth.
-      - name: Ensure packages are public
-        continue-on-error: true
-        run: |
-          for dir in packages/*/; do
-            name=$(node -p "require('./${dir}package.json').name")
-            npm access list packages @moribashi 2>/dev/null | grep -q "^${name}:" || { echo "· $name not created yet"; continue; }
-            current=$(npm access get status "$name" 2>/dev/null || echo unknown)
-            if [ "$current" = "public" ]; then
-              echo "· $name already public"
-            else
-              echo "· $name is '$current' — setting public"
-              npm access set status=public "$name" && echo "  ✓ now public" || echo "  ✗ could not change"
-            fi
-          done
-
+      # The practical consequence is that the verification step at the end can
+      # fail on a package that published seconds earlier. Re-run before
+      # investigating.
       - name: Bootstrap brand-new packages (token auth, no OIDC)
         run: |
 
