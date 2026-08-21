@@ -5,15 +5,12 @@ import {
   type MoribashiApp,
   type MoribashiPlugin,
 } from '@moribashi/core';
-import {
-  createKafkaClient,
-  type KafkaClient,
-  type SchemaRegistryClient,
-} from './client.js';
+import { createKafkaClient, type KafkaClient } from './client.js';
 import type { KafkaConfigInput } from './config.js';
 import { KafkaConfigError } from './errors.js';
 import { createConsumer, type CreateConsumerOptions, type KafkaConsumer } from './consumer.js';
-import { createProducer, type CreateProducerOptions, type KafkaProducer } from './producer.js';
+import { createProducer, type KafkaProducer } from './producer.js';
+import type { SchemaRegistryClient } from './registry.js';
 import { registerSchemas, type Logger } from './schemas.js';
 
 /** Services `kafkaPlugin` registers in the root container. */
@@ -36,8 +33,6 @@ export interface KafkaPluginOptions extends KafkaConfigInput {
    * does not own.
    */
   registerSchemas?: boolean | string;
-  /** See `CreateProducerOptions.schemaCacheTtlMs`. */
-  schemaCacheTtlMs?: CreateProducerOptions['schemaCacheTtlMs'];
   /** Structured logger for schema registration. Defaults to `console.warn`. */
   log?: Logger;
 }
@@ -60,13 +55,7 @@ export interface KafkaPluginOptions extends KafkaConfigInput {
  * transport library racing the service's own shutdown.
  */
 export function kafkaPlugin(opts: KafkaPluginOptions = {}): MoribashiPlugin {
-  const {
-    client: providedClient,
-    registerSchemas: schemas = false,
-    schemaCacheTtlMs,
-    log,
-    ...configInput
-  } = opts;
+  const { client: providedClient, registerSchemas: schemas = false, log, ...configInput } = opts;
 
   // Built here, not inside `register()`: resolving config is pure (it opens no
   // connection), so a bad broker list or a missing registry URL should throw
@@ -80,9 +69,7 @@ export function kafkaPlugin(opts: KafkaPluginOptions = {}): MoribashiPlugin {
       app.container.register({
         kafkaClient: asValue(client),
         schemaRegistry: asValue(client.registry),
-        producer: asFunction(() =>
-          createProducer({ client, schemaCacheTtlMs }),
-        ).setLifetime(Lifetime.SINGLETON),
+        producer: asFunction(() => createProducer({ client })).setLifetime(Lifetime.SINGLETON),
       });
 
       if (schemas !== false) {
@@ -140,6 +127,9 @@ export function kafkaConsumerPlugin(opts: KafkaConsumerPluginOptions): Moribashi
     tls,
     schemaRegistry: schemaRegistryConfig,
     schemasDir,
+    messages,
+    subjectFor,
+    schemaCacheTtlMs,
     ...consumerOptions
   } = opts;
 
@@ -160,6 +150,9 @@ export function kafkaConsumerPlugin(opts: KafkaConsumerPluginOptions): Moribashi
     ...(tls !== undefined ? { tls } : {}),
     ...(schemaRegistryConfig !== undefined ? { schemaRegistry: schemaRegistryConfig } : {}),
     ...(schemasDir !== undefined ? { schemasDir } : {}),
+    ...(messages !== undefined ? { messages } : {}),
+    ...(subjectFor !== undefined ? { subjectFor } : {}),
+    ...(schemaCacheTtlMs !== undefined ? { schemaCacheTtlMs } : {}),
   };
 
   return {

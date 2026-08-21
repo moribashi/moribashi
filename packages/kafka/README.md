@@ -18,8 +18,11 @@ ships as a second opt-in plugin, `kafkaConsumerPlugin()`.
 ## Quickstart
 
 ```ts
+import { create } from '@bufbuild/protobuf';
 import { createApp } from '@moribashi/core';
 import { kafkaPlugin, type KafkaProducer } from '@moribashi/kafka';
+// Buf-generated from schemas/iam.identity.created.v1-value.proto
+import { IdentityCreatedSchema } from './gen/iam/identity/v1/events_pb.js';
 
 const app = createApp();
 
@@ -29,6 +32,9 @@ app.use(kafkaPlugin({
   schemaRegistry: { url: 'http://redpanda:8081' },
   schemasDir: './schemas',
   registerSchemas: true,   // this service *owns* these subjects
+  messages: {              // topic → the generated message produced on it
+    'iam.identity.created.v1': IdentityCreatedSchema,
+  },
 }));
 
 await app.start();
@@ -38,11 +44,16 @@ const producer = app.resolve<KafkaProducer>('producer');
 await producer.send({
   topic: 'iam.identity.created.v1',
   key: identity.tenantId,          // per message — this is the partition key
-  value: { id: identity.id, email: identity.email },
+  value: create(IdentityCreatedSchema, { id: identity.id, email: identity.email }),
 });
 
 await app.stop();                  // disconnects the producer via onDestroy
 ```
+
+The generated message type feeds the serializer directly: the descriptor Buf
+emits from the `.proto` is the one that encodes the bytes, so a payload that
+diverges from the registered contract is a compile error in the service rather
+than a runtime failure on a live send.
 
 Everything above can come from the environment instead — `kafkaPlugin()` with no
 arguments is a valid call in a properly configured pod.
@@ -160,14 +171,47 @@ entities, and a single key applied to a whole batch mis-partitions every message
 but the first entity's — a bug that only shows up as out-of-order events under
 load.
 
-Encoding happens before any produce call, so a batch that cannot be encoded
-never half-publishes. Failures surface as `SchemaEncodeError` carrying the topic,
-subject, and schema id.
+`value` is normally a Buf-generated message. A plain object is accepted too and
+is initialised into the type declared for the topic in `messages` — using the
+**generated** field names, so `display_name` in the `.proto` is `displayName`
+here. Either way the topic must appear in `messages`, or the send fails with a
+`SchemaEncodeError` naming the option; producing a message whose type does not
+match the one declared for the topic fails the same way.
 
-Resolved `subject → schemaId` pairs are cached with a TTL (default 5 minutes;
-`schemaCacheTtlMs: 0` disables it) and can be dropped explicitly with
-`producer.clearSchemaCache(subject?)`. A forever-cache would mean a registry
-update is never picked up without a pod restart.
+Encoding happens before any produce call, so a batch that cannot be encoded
+never half-publishes. Failures surface as `SchemaEncodeError` carrying the topic
+and subject.
+
+Schema-id resolution and its cache live in `@confluentinc/schemaregistry`.
+`schemaCacheTtlMs` (client config, default 5 minutes) becomes its
+`cacheLatestTtlSecs`; `producer.clearSchemaCache()` drops those caches. A
+forever-cache would mean a registry update is never picked up without a pod
+restart.
+
+### The wire format
+
+Values go on the wire in Confluent's framing:
+
+```
+magic (0x00) | schema id (int32 BE) | message-index array | payload
+```
+
+The message-index array names the path to the message inside its `.proto` file.
+For the usual single-top-level-message schema it is `[0]`, written as the single
+byte `0x00`; a second top-level message is `0x02 0x02`, a nested one
+`0x04 0x02 0x00`.
+
+That array is not optional, and omitting it produces bytes only a decoder with
+the same omission can read — see [`CHANGELOG.md`](../../CHANGELOG.md) for the
+bug that got this package off `@kafkajs/confluent-schema-registry`.
+`readWirePrefix(bytes)` parses the framing if you need to prove what a producer
+actually wrote:
+
+```ts
+import { readWirePrefix } from '@moribashi/kafka';
+
+readWirePrefix(bytes);  // { magic: 0, schemaId: 19, messageIndexes: [0], length: 6 }
+```
 
 
 ## Consuming
@@ -359,6 +403,13 @@ a read, not a registration. `registerSchemas` is a producer-side option and has
 no consumer equivalent, deliberately: a consumer that registered a schema would
 be asserting a contract it does not own.
 
+A consumer needs no `messages` map and no generated types either: the schema id
+and the message-index array in the framing are enough to resolve the writer's
+descriptor from the registry. `event.value` therefore comes back as a
+`@bufbuild/protobuf` message carrying its own `$typeName`, with fields in their
+generated form — a service that *does* have the generated type can narrow it
+with `isMessage(event.value, IdentityCreatedSchema)`.
+
 ## SASL / OAUTHBEARER
 
 The cluster runs unauthenticated today; SASL is supported now so turning it on is
@@ -416,20 +467,36 @@ docker compose -f packages/kafka/docker-compose.yml down -v
 ```
 
 Single-node Redpanda plus Console on <http://localhost:8080>. The integration
-suite is skipped unless `KAFKA_INTEGRATION=1`; it is the only place the real
-Confluent wire format, a real produce → consume → decode → commit round-trip,
-and a real DLQ hop are exercised end to end.
+suite is skipped unless `KAFKA_INTEGRATION=1`; it is where a real produce →
+consume → decode → commit round-trip and a real DLQ hop are exercised end to
+end, and where the framing is read back **in a separate process** by a stock
+Confluent deserializer that imports nothing from this package. A same-process
+round trip proves only that a codec agrees with itself, which is exactly how the
+original framing bug stayed invisible.
+
+The byte-level framing assertions in `src/__tests__/wire-format.test.ts` need no
+broker and always run.
 
 ## Dependencies
 
 - **`@platformatic/kafka`** — pure-JS, TypeScript-native Kafka client. Services
   build on `node:24-alpine`, where native bindings are a musl risk. `kafkajs`
   was rejected: last published February 2023.
-- **`@kafkajs/confluent-schema-registry`** — Confluent wire framing and registry
-  access, with `SchemaType.PROTOBUF` support and, despite the name, no kafkajs
-  dependency.
+- **`@confluentinc/schemaregistry`** — Confluent's own Node client: registry
+  access and, crucially, wire framing that is actually the Confluent wire
+  format. It replaced `@kafkajs/confluent-schema-registry`, which wrote protobuf
+  frames with no message-index array.
+  Its dependency tree is heavy — AWS/Azure/GCP KMS SDKs, Vault, `simple-oauth2`,
+  `jsonata`, all for client-side field-level encryption and data contracts we do
+  not use. That weight is accepted deliberately: correct bytes and active
+  maintenance are worth more than a slim `node_modules`, and the alternative was
+  hand-rolling the framing this package exists not to hand-roll.
+- **`@bufbuild/protobuf`** — the protobuf runtime `@confluentinc/schemaregistry`
+  is built on, and the one Buf generates against. Keep the service's generated
+  code on the same major so the workspace resolves a single copy.
 
 Protobuf rather than Avro: the `.proto` generates TypeScript types at the
 service level (via Buf), so a producer cannot emit a payload that diverges from
-the registered schema. Avro gives no compile-time guarantee. `@bufbuild/protobuf`
-is a service-level concern — this package stays light and does not depend on it.
+the registered schema. Avro gives no compile-time guarantee. Those generated
+types now feed the serializer directly, which is what removes the second
+`.proto` parse the original design accepted as a cost.

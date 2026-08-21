@@ -77,7 +77,7 @@ describe('kafkaPlugin — DI registration', () => {
     // *which* registry the producer resolves subjects against, and no broker
     // is reachable in a unit test.
     const registry = fakeRegistry({
-      getLatestSchemaId: vi.fn(async () => {
+      encode: vi.fn(async () => {
         throw new Error('sentinel');
       }),
     });
@@ -88,7 +88,7 @@ describe('kafkaPlugin — DI registration', () => {
     await expect(
       app.resolve<KafkaProducer>('producer').send({ topic: 't', value: { id: 'a' } }),
     ).rejects.toThrow(/sentinel/);
-    expect(registry.getLatestSchemaId).toHaveBeenCalledWith('t-value');
+    expect(registry.encode).toHaveBeenCalledWith('t', { id: 'a' });
   });
 
   it('builds a client from config when none is supplied', async () => {
@@ -147,8 +147,8 @@ describe('kafkaPlugin — schema registration', () => {
     await app.start();
 
     expect(registry.register).toHaveBeenCalledWith(
-      { type: 'PROTOBUF', schema: expect.stringContaining('IdentityCreated') },
-      { subject: 'iam.identity.created.v1-value' },
+      'iam.identity.created.v1-value',
+      expect.stringContaining('IdentityCreated'),
     );
   });
 

@@ -37,18 +37,20 @@ export type RegistryStubs = { [K in keyof SchemaRegistryClient]: Mock };
 export type FakeRegistry = SchemaRegistryClient & RegistryStubs;
 
 /**
- * A stand-in for `SchemaRegistry`. `encode` produces a deterministic,
- * inspectable buffer so tests can assert *which* payload was framed with
- * *which* schema id without decoding Confluent wire format.
+ * A stand-in for the registry seam. `encode` produces a deterministic,
+ * inspectable buffer so tests can assert *which* value was framed for *which*
+ * topic without decoding Confluent wire format — the real framing is asserted
+ * byte for byte in `wire-format.test.ts`, which is where it belongs.
  */
 export function fakeRegistry(overrides: Partial<RegistryStubs> = {}): FakeRegistry {
   return {
-    register: vi.fn(async () => ({ id: 1 })),
-    encode: vi.fn(async (id: number, payload: unknown) =>
-      Buffer.from(`${id}:${JSON.stringify(payload)}`),
+    register: vi.fn(async () => 1),
+    getLatestSchemaId: vi.fn(async () => 42),
+    encode: vi.fn(async (topic: string, value: unknown) =>
+      Buffer.from(`${topic}:${JSON.stringify(value)}`),
     ),
     decode: vi.fn(async () => ({})),
-    getLatestSchemaId: vi.fn(async () => 42),
+    clearCaches: vi.fn(() => {}),
     ...overrides,
   } as unknown as FakeRegistry;
 }

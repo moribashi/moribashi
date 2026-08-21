@@ -1,9 +1,12 @@
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
-import { SchemaType } from '@kafkajs/confluent-schema-registry';
-import { createKafkaClient, type KafkaClient, type SchemaRegistryClient } from './client.js';
+import { createKafkaClient, type KafkaClient } from './client.js';
 import type { KafkaConfigInput } from './config.js';
 import { SchemaRegistrationError } from './errors.js';
+import type { SchemaRegistryClient } from './registry.js';
+import { SCHEMA_FILE_EXTENSION, subjectForFile, subjectForTopic } from './subjects.js';
+
+export { SCHEMA_FILE_EXTENSION, subjectForFile, subjectForTopic };
 
 export interface Logger {
   warn(obj: Record<string, unknown>, msg: string): void;
@@ -23,24 +26,6 @@ const defaultLogger: Logger = {
   },
   info() {},
 };
-
-export const SCHEMA_FILE_EXTENSION = '.proto';
-
-/**
- * Confluent's `TopicNameStrategy`: the value schema for topic `t` lives at
- * subject `t-value`. Schema files are therefore named after their subject —
- * `iam.identity.created.v1-value.proto` — and the subject is just the
- * basename. The same derivation runs on the produce side (`subjectForTopic`),
- * which is what keeps registration and encoding pointed at one subject.
- */
-export function subjectForFile(file: string): string {
-  return path.basename(file, SCHEMA_FILE_EXTENSION);
-}
-
-/** The value subject a message on `topic` is encoded against. */
-export function subjectForTopic(topic: string): string {
-  return `${topic}-value`;
-}
 
 export interface RegisteredSchema {
   subject: string;
@@ -142,10 +127,7 @@ export async function registerSchemas(
   const registered: RegisteredSchema[] = [];
   for (const { file, subject, schema } of sources) {
     try {
-      const { id } = await registry.register(
-        { type: SchemaType.PROTOBUF, schema },
-        { subject },
-      );
+      const id = await registry.register(subject, schema);
       registered.push({ subject, id, file });
     } catch (cause) {
       throw new SchemaRegistrationError(

@@ -13,9 +13,13 @@
  * a consumer can decode.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import { create, toBinary } from '@bufbuild/protobuf';
 import { Admin, Consumer, Producer } from '@platformatic/kafka';
 import { createApp } from '@moribashi/core';
 import {
@@ -23,6 +27,7 @@ import {
   createKafkaClient,
   kafkaConsumerPlugin,
   kafkaPlugin,
+  readWirePrefix,
   registerSchemas,
   DLQ_HEADER_PREFIX,
   EVENT_SCOPE,
@@ -33,6 +38,10 @@ import {
   type KafkaProducer,
   type Logger,
 } from '../index.js';
+import { TEST_PROTO, TestEventSchema, type TestEvent } from './fixtures/test_event_pb.js';
+
+const execFileAsync = promisify(execFile);
+const DECODE_CHILD = fileURLToPath(new URL('./support/decode-child.mjs', import.meta.url));
 
 const enabled = process.env.KAFKA_INTEGRATION === '1';
 
@@ -43,23 +52,21 @@ const TOPIC = `moribashi.kafka.it.${Date.now()}.v1`;
 const SUBJECT = `${TOPIC}-value`;
 const DLQ_TOPIC = `${TOPIC}.dlq`;
 
-const V1 = `syntax = "proto3";
-package moribashi.it;
-message IdentityCreated {
-  string id = 1;
-  string email = 2;
-}
-`;
+/**
+ * The `.proto` behind the Buf-generated `TestEventSchema` fixture. Registering
+ * this text and encoding with that descriptor is the whole point: the
+ * generated type feeds the serializer directly, with no second `.proto` parse.
+ */
+const V1 = TEST_PROTO;
 
 /** Adds an optional field — backwards compatible. */
-const V2_COMPATIBLE = `syntax = "proto3";
-package moribashi.it;
-message IdentityCreated {
-  string id = 1;
-  string email = 2;
-  string display_name = 3;
-}
-`;
+const V2_COMPATIBLE = TEST_PROTO.replace(
+  '  string display_name = 3;',
+  '  string display_name = 3;\n  string nickname = 4;',
+);
+
+/** Builds a `TestEvent`, the way a service would from its generated types. */
+const event = (init: Omit<Partial<TestEvent>, '$typeName'>) => create(TestEventSchema, init);
 
 const silentLog: Logger = { warn: () => {}, info: () => {} };
 
@@ -81,6 +88,7 @@ describe.skipIf(!enabled)('integration: Redpanda + Schema Registry', () => {
       brokers,
       schemaRegistry: { url: registryUrl },
       schemasDir: tmpDir,
+      messages: { [TOPIC]: TestEventSchema },
     });
 
     admin = new Admin({ clientId: 'moribashi-kafka-it-admin', bootstrapBrokers: brokers });
@@ -93,6 +101,13 @@ describe.skipIf(!enabled)('integration: Redpanda + Schema Registry', () => {
   afterAll(async () => {
     await admin?.deleteTopics({ topics: [TOPIC, DLQ_TOPIC] }).catch(() => {});
     await admin?.close();
+    // The broker is shared, so the subject goes too — soft-delete then hard.
+    for (const permanent of [false, true]) {
+      await fetch(
+        `${registryUrl}/subjects/${encodeURIComponent(SUBJECT)}?permanent=${permanent}`,
+        { method: 'DELETE' },
+      ).catch(() => {});
+    }
     if (tmpDir) await fs.rm(tmpDir, { recursive: true, force: true });
   }, 60_000);
 
@@ -134,8 +149,8 @@ describe.skipIf(!enabled)('integration: Redpanda + Schema Registry', () => {
 
     const producer = app.resolve<KafkaProducer>('producer');
     await producer.send([
-      { topic: TOPIC, value: { id: 'a1', email: 'a@example.com' }, key: 'tenant-a' },
-      { topic: TOPIC, value: { id: 'b1', email: 'b@example.com' }, key: 'tenant-b' },
+      { topic: TOPIC, value: event({ id: 'a1', email: 'a@example.com' }), key: 'tenant-a' },
+      { topic: TOPIC, value: event({ id: 'b1', email: 'b@example.com' }), key: 'tenant-b' },
     ]);
 
     const consumer = new Consumer({
@@ -153,7 +168,7 @@ describe.skipIf(!enabled)('integration: Redpanda + Schema Registry', () => {
         key: message.key.toString(),
         // Decoding proves the Confluent framing this package produced is the
         // real thing — the registry resolves the schema id out of the bytes.
-        value: (await client.registry.decode(message.value)) as Record<string, unknown>,
+        value: (await client.registry.decode(TOPIC, message.value)) as Record<string, unknown>,
       });
       if (seen.length === 2) break;
     }
@@ -166,14 +181,117 @@ describe.skipIf(!enabled)('integration: Redpanda + Schema Registry', () => {
     expect(seen.map(s => s.value.id).sort()).toEqual(['a1', 'b1']);
   }, 60_000);
 
+  describe('the wire format itself', () => {
+    /**
+     * The regression that motivated the move off
+     * `@kafkajs/confluent-schema-registry`. Its framing was
+     * `magic | schemaId | payload` — no message-index array — so byte 5 was the
+     * first byte of the protobuf payload (`0x0a`, the tag for field 1) instead
+     * of the index array. It only ever broke *other* consumers, which is why
+     * the symmetric suite stayed green while Redpanda Console showed
+     * `UTF8WITHCONTROLCHARS`.
+     */
+    it('puts a message-index array on the wire, and it is 0x00', async () => {
+      const app = createApp();
+      app.use(kafkaPlugin({ client, registerSchemas: true, log: silentLog }));
+      await app.start();
+
+      const message = event({ id: 'wire-1', email: 'wire@example.com' });
+      const bytes = await client.registry.encode(TOPIC, message);
+      await app.stop();
+
+      // eslint-disable-next-line no-console
+      console.log('wire bytes:', bytes.toString('hex'));
+
+      expect(bytes[0]).toBe(0x00);
+      expect(bytes.readInt32BE(1)).toBeGreaterThan(0);
+      expect(bytes[5]).toBe(0x00);
+      expect(bytes[5]).not.toBe(0x0a);
+      expect(bytes.subarray(6)).toEqual(Buffer.from(toBinary(TestEventSchema, message)));
+
+      const prefix = readWirePrefix(bytes);
+      expect(prefix.messageIndexes).toEqual([0]);
+      expect(prefix.length).toBe(6);
+    });
+
+    /**
+     * The decode runs in a **separate process** that imports nothing from this
+     * package — just `@confluentinc/schemaregistry`'s stock deserializer. A
+     * same-process round trip is exactly what hid the original bug: a codec
+     * agreeing with itself proves nothing about the bytes.
+     */
+    it('is read back by a stock Confluent deserializer in another process', async () => {
+      const app = createApp();
+      app.use(kafkaPlugin({ client, registerSchemas: true, log: silentLog }));
+      await app.start();
+      await app.resolve<KafkaProducer>('producer').send({
+        topic: TOPIC,
+        key: 'tenant-child',
+        value: event({ id: 'child-1', email: 'child@example.com', displayName: 'Child' }),
+      });
+      await app.stop();
+
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [
+          DECODE_CHILD,
+          JSON.stringify({
+            brokers,
+            registryUrl,
+            topic: TOPIC,
+            groupId: `moribashi-kafka-it-child-${Date.now()}`,
+            expect: 200,
+            timeoutMs: 20_000,
+          }),
+        ],
+        { timeout: 90_000, maxBuffer: 32 * 1024 * 1024 },
+      );
+
+      const { messages } = JSON.parse(stdout) as {
+        messages: Array<{
+          key?: string;
+          hex: string;
+          prefix: { magic: number; schemaId: number; messageIndexes: number[]; length: number };
+          value: Record<string, unknown>;
+        }>;
+      };
+
+      const mine = messages.find(m => m.value.id === 'child-1');
+      expect(mine, `no child-1 among ${messages.length} messages`).toBeDefined();
+      // eslint-disable-next-line no-console
+      console.log('child-decoded bytes:', mine!.hex, mine!.prefix);
+
+      expect(mine!.key).toBe('tenant-child');
+      expect(mine!.prefix.magic).toBe(0x00);
+      expect(mine!.prefix.messageIndexes).toEqual([0]);
+      expect(mine!.prefix.length).toBe(6);
+      expect(Buffer.from(mine!.hex, 'hex')[5]).toBe(0x00);
+      // Field names come back in their generated form, and the payload is
+      // intact — which is precisely what the old framing could not deliver.
+      expect(mine!.value).toMatchObject({
+        $typeName: 'moribashi.kafka.test.v1.TestEvent',
+        id: 'child-1',
+        email: 'child@example.com',
+        displayName: 'Child',
+      });
+
+      // Every message on the topic is framed, not just the one we looked for.
+      for (const m of messages) {
+        expect(Buffer.from(m.hex, 'hex')[5]).toBe(0x00);
+      }
+    }, 180_000);
+  });
+
   it('rejects an incompatible change loudly', async () => {
     const incompatibleDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kafka-it-bad-'));
     // Removing a field and changing a field type breaks the reader contract.
     await writeSchema(
       incompatibleDir,
       `syntax = "proto3";
-package moribashi.it;
-message IdentityCreated {
+
+package moribashi.kafka.test.v1;
+
+message TestEvent {
   int32 id = 1;
 }
 `,
@@ -218,10 +336,10 @@ message IdentityCreated {
         {
           topic: TOPIC,
           key: 'tenant-a',
-          value: { id: 'rt-a', email: 'a@example.com' },
+          value: event({ id: 'rt-a', email: 'a@example.com' }),
           headers: { 'x-correlation-id': 'corr-rt-a' },
         },
-        { topic: TOPIC, key: 'tenant-b', value: { id: 'rt-b', email: 'b@example.com' } },
+        { topic: TOPIC, key: 'tenant-b', value: event({ id: 'rt-b', email: 'b@example.com' }) },
       ]);
       await producerApp.stop();
 
@@ -282,7 +400,7 @@ message IdentityCreated {
       await producerApp.start();
       await producerApp
         .resolve<KafkaProducer>('producer')
-        .send({ topic: TOPIC, key: 'tenant-c', value: { id: 'scoped', email: 'c@example.com' } });
+        .send({ topic: TOPIC, key: 'tenant-c', value: event({ id: 'scoped', email: 'c@example.com' }) });
       await producerApp.stop();
 
       const consumerApp = createApp();
@@ -412,7 +530,7 @@ message IdentityCreated {
     await expect(
       app
         .resolve<KafkaProducer>('producer')
-        .send({ topic: `${TOPIC}.does-not-exist`, value: { id: 'x' } }),
+        .send({ topic: `${TOPIC}.does-not-exist`, value: event({ id: 'x' }) }),
     ).rejects.toBeTruthy();
 
     await app.stop();

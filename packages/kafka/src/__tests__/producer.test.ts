@@ -22,11 +22,12 @@ afterEach(() => {
 function setup(
   registryOverrides: Partial<RegistryStubs> = {},
   producerOptions: Parameters<typeof createProducer>[0] = {},
+  configOverrides: Partial<typeof baseConfig> = {},
 ) {
   const registry = fakeRegistry(registryOverrides);
   const raw = fakeRawProducer();
   const producer = createProducer({
-    client: fakeClient(baseConfig, registry),
+    client: fakeClient({ ...baseConfig, ...configOverrides }, registry),
     producer: raw,
     ...producerOptions,
   });
@@ -60,15 +61,19 @@ describe('createProducer', () => {
 });
 
 describe('send', () => {
-  it('encodes the value against the topic subject and produces it', async () => {
+  it('encodes the value for its topic and produces the framed bytes', async () => {
     const { registry, raw, producer } = setup();
 
     await producer.send({ topic: 'iam.identity.created.v1', value: { id: 'a1' } });
 
-    expect(registry.getLatestSchemaId).toHaveBeenCalledWith('iam.identity.created.v1-value');
-    expect(registry.encode).toHaveBeenCalledWith(42, { id: 'a1' });
+    // Encoding is topic-scoped now: Confluent's serializer derives the subject
+    // itself (`TopicNameStrategy`) rather than being handed a resolved id.
+    expect(registry.encode).toHaveBeenCalledWith('iam.identity.created.v1', { id: 'a1' });
     expect(sentMessages(raw)).toEqual([
-      { topic: 'iam.identity.created.v1', value: Buffer.from('42:{"id":"a1"}') },
+      {
+        topic: 'iam.identity.created.v1',
+        value: Buffer.from('iam.identity.created.v1:{"id":"a1"}'),
+      },
     ]);
   });
 
@@ -197,7 +202,7 @@ describe('send', () => {
     expect(raw.send.mock.calls.at(-1)?.[0]).not.toHaveProperty('acks');
   });
 
-  it('spans topics in one batch, resolving a subject per topic', async () => {
+  it('spans topics in one batch, encoding each against its own topic', async () => {
     const { registry, producer } = setup();
 
     await producer.send([
@@ -205,22 +210,14 @@ describe('send', () => {
       { topic: 'b', value: 2 },
     ]);
 
-    expect(registry.getLatestSchemaId.mock.calls.map(c => c[0])).toEqual(['a-value', 'b-value']);
-  });
-
-  it('honours a custom subject derivation', async () => {
-    const { registry, producer } = setup({}, { subjectFor: topic => `${topic}-payload` });
-
-    await producer.send({ topic: 't', value: {} });
-
-    expect(registry.getLatestSchemaId).toHaveBeenCalledWith('t-payload');
+    expect(registry.encode.mock.calls.map(c => c[0])).toEqual(['a', 'b']);
   });
 });
 
 describe('encode failures', () => {
-  it('wraps a missing subject in SchemaEncodeError', async () => {
+  it('wraps a registry failure in SchemaEncodeError', async () => {
     const { producer } = setup({
-      getLatestSchemaId: vi.fn(async () => {
+      encode: vi.fn(async () => {
         throw new Error('Subject not found');
       }),
     });
@@ -228,12 +225,12 @@ describe('encode failures', () => {
     const promise = producer.send({ topic: 'iam.identity.created.v1', value: {} });
 
     await expect(promise).rejects.toBeInstanceOf(SchemaEncodeError);
-    await expect(promise).rejects.toThrow(/No schema available for subject/);
+    await expect(promise).rejects.toThrow(/Failed to encode message for topic/);
   });
 
   it('records topic and subject on the error', async () => {
     const { producer } = setup({
-      getLatestSchemaId: vi.fn(async () => {
+      encode: vi.fn(async () => {
         throw new Error('nope');
       }),
     });
@@ -245,34 +242,46 @@ describe('encode failures', () => {
       const error = err as SchemaEncodeError;
       expect(error.topic).toBe('orders');
       expect(error.subject).toBe('orders-value');
-      expect(error.schemaId).toBeUndefined();
       expect(error.cause).toBeInstanceOf(Error);
     }
   });
 
-  it('wraps a payload that does not satisfy the schema, keeping the schema id', async () => {
+  it('names the custom subject derivation on the error', async () => {
+    const { producer } = setup(
+      {
+        encode: vi.fn(async () => {
+          throw new Error('nope');
+        }),
+      },
+      {},
+      { subjectFor: (topic: string) => `${topic}-payload` },
+    );
+
+    try {
+      await producer.send({ topic: 't', value: {} });
+      expect.unreachable('should have thrown');
+    } catch (err) {
+      expect((err as SchemaEncodeError).subject).toBe('t-payload');
+    }
+  });
+
+  it('passes a SchemaEncodeError from the registry through unwrapped', async () => {
+    const original = new SchemaEncodeError('no message type declared', 'orders', 'orders-value');
     const { producer } = setup({
       encode: vi.fn(async () => {
-        throw new Error('invalid payload');
+        throw original;
       }),
     });
 
-    try {
-      await producer.send({ topic: 'orders', value: { wrong: true } });
-      expect.unreachable('should have thrown');
-    } catch (err) {
-      const error = err as SchemaEncodeError;
-      expect(error).toBeInstanceOf(SchemaEncodeError);
-      expect(error.schemaId).toBe(42);
-    }
+    await expect(producer.send({ topic: 'orders', value: {} })).rejects.toBe(original);
   });
 
   it('does not half-publish a batch when one message fails to encode', async () => {
     let call = 0;
     const { raw, producer } = setup({
-      encode: vi.fn(async (_id: number, payload: unknown) => {
+      encode: vi.fn(async (_topic: string, value: unknown) => {
         if (++call === 2) throw new Error('invalid payload');
-        return Buffer.from(JSON.stringify(payload));
+        return Buffer.from(JSON.stringify(value));
       }),
     });
 
@@ -288,88 +297,33 @@ describe('encode failures', () => {
 });
 
 describe('schema id cache', () => {
-  it('resolves a subject once and reuses it', async () => {
+  /**
+   * Resolution and caching of `subject → schemaId` moved into
+   * `@confluentinc/schemaregistry`, which owns it because it is the thing that
+   * looks the id up. `schemaCacheTtlMs` is now client config and becomes the
+   * Confluent client's `cacheLatestTtlSecs`; there is no second cache here to
+   * disagree with it.
+   */
+  it('clearSchemaCache() drops the registry client’s caches', async () => {
     const { registry, producer } = setup();
 
-    await producer.send({ topic: 't', value: 1 });
-    await producer.send({ topic: 't', value: 2 });
-
-    expect(registry.getLatestSchemaId).toHaveBeenCalledTimes(1);
-  });
-
-  it('coalesces concurrent lookups for one subject', async () => {
-    const { registry, producer } = setup();
-
-    await Promise.all([
-      producer.send({ topic: 't', value: 1 }),
-      producer.send({ topic: 't', value: 2 }),
-      producer.send({ topic: 't', value: 3 }),
-    ]);
-
-    expect(registry.getLatestSchemaId).toHaveBeenCalledTimes(1);
-  });
-
-  it('expires entries so a registry update is eventually seen — no forever-cache', async () => {
-    let now = 0;
-    const { registry, producer } = setup({}, { schemaCacheTtlMs: 1_000, now: () => now });
-
-    await producer.send({ topic: 't', value: 1 });
-    now = 999;
-    await producer.send({ topic: 't', value: 2 });
-    now = 1_001;
-    await producer.send({ topic: 't', value: 3 });
-
-    expect(registry.getLatestSchemaId).toHaveBeenCalledTimes(2);
-  });
-
-  it('disables caching entirely at ttl 0', async () => {
-    const { registry, producer } = setup({}, { schemaCacheTtlMs: 0 });
-
-    await producer.send({ topic: 't', value: 1 });
-    await producer.send({ topic: 't', value: 2 });
-
-    expect(registry.getLatestSchemaId).toHaveBeenCalledTimes(2);
-  });
-
-  it('clearSchemaCache() drops every subject', async () => {
-    const { registry, producer } = setup();
-
-    await producer.send({ topic: 'a', value: 1 });
-    await producer.send({ topic: 'b', value: 1 });
     producer.clearSchemaCache();
-    await producer.send({ topic: 'a', value: 2 });
-    await producer.send({ topic: 'b', value: 2 });
 
-    expect(registry.getLatestSchemaId).toHaveBeenCalledTimes(4);
+    expect(registry.clearCaches).toHaveBeenCalledOnce();
   });
 
-  it('clearSchemaCache(subject) drops only that subject', async () => {
+  it('accepts a subject argument, though it clears everything', async () => {
     const { registry, producer } = setup();
 
-    await producer.send({ topic: 'a', value: 1 });
-    await producer.send({ topic: 'b', value: 1 });
     producer.clearSchemaCache('a-value');
-    await producer.send({ topic: 'a', value: 2 });
-    await producer.send({ topic: 'b', value: 2 });
 
-    expect(registry.getLatestSchemaId).toHaveBeenCalledTimes(3);
+    expect(registry.clearCaches).toHaveBeenCalledOnce();
   });
 
-  it('does not cache a failed lookup', async () => {
-    let attempt = 0;
-    const { registry, producer } = setup({
-      getLatestSchemaId: vi.fn(async () => {
-        if (++attempt === 1) throw new Error('registry down');
-        return 5;
-      }),
-    });
+  it('carries the ttl into config rather than keeping one of its own', () => {
+    const { producer } = setup({}, {}, { schemaCacheTtlMs: 1_000 });
 
-    await expect(producer.send({ topic: 't', value: 1 })).rejects.toBeInstanceOf(
-      SchemaEncodeError,
-    );
-    await expect(producer.send({ topic: 't', value: 2 })).resolves.toBeDefined();
-
-    expect(registry.getLatestSchemaId).toHaveBeenCalledTimes(2);
+    expect(producer.producer).toBeDefined();
   });
 });
 

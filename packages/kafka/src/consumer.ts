@@ -1,6 +1,7 @@
 import { Consumer, Producer, type Message, type MessagesStream } from '@platformatic/kafka';
 import { asValue, type MoribashiApp } from '@moribashi/core';
-import { createKafkaClient, type KafkaClient, type SchemaRegistryClient } from './client.js';
+import { createKafkaClient, type KafkaClient } from './client.js';
+import type { SchemaRegistryClient } from './registry.js';
 import type { KafkaConfigInput } from './config.js';
 import {
   EventHandlerError,
@@ -306,7 +307,10 @@ export function createConsumer(opts: CreateConsumerOptions): KafkaConsumer {
   async function decodeValue(message: ConsumedMessage): Promise<unknown> {
     if (!message.value || message.value.length === 0) return null;
     try {
-      return await registry.decode(message.value);
+      // The registry resolves the writer's schema from the id in the framing
+      // and walks the message-index array to the right message type, so a
+      // consumer needs no local `.proto` and registers nothing.
+      return await registry.decode(message.topic, message.value);
     } catch (cause) {
       throw new SchemaDecodeError(
         `Failed to decode message on "${message.topic}" partition ${message.partition} ` +

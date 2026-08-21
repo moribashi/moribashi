@@ -1,4 +1,16 @@
+import type { DescMessage } from '@bufbuild/protobuf';
 import { KafkaConfigError } from './errors.js';
+
+/**
+ * Topic → the Buf-generated message type produced on it (`FooSchema`, as
+ * `protoc-gen-es` emits it).
+ *
+ * This is what lets the `.proto` be the single source of truth end to end: the
+ * descriptor that types the payload at compile time is the same one the
+ * Confluent serializer encodes with — no second `.proto` parse, and no way for
+ * the two to drift.
+ */
+export type TopicMessageTypes = Record<string, DescMessage>;
 
 /**
  * Supplies a bearer token for SASL/OAUTHBEARER. Deliberately a bare function
@@ -72,6 +84,20 @@ export interface KafkaConfig {
    * in every real deployment.
    */
   allowAutoTopicCreation: boolean;
+  /**
+   * Topic → generated message type, for every topic this client produces to.
+   * Empty for a consumer-only service: decoding resolves the descriptor from
+   * the schema id in the message, not from local types.
+   */
+  messages?: TopicMessageTypes;
+  /** Override the topic → subject derivation. Default `TopicNameStrategy`. */
+  subjectFor?: (topic: string) => string;
+  /**
+   * How long a resolved subject → schema id stays cached, in ms. Default 5
+   * minutes. An unbounded cache never sees a registry update without a pod
+   * restart, which is why there is a ceiling at all.
+   */
+  schemaCacheTtlMs: number;
 }
 
 /**
@@ -94,9 +120,26 @@ export interface KafkaConfigInput {
   tls?: TlsConfig;
   schemaRegistry?: Partial<SchemaRegistryConfig>;
   schemasDir?: string;
+  /**
+   * Topic → Buf-generated message type. Required for every topic this client
+   * produces to — the serializer resolves a message's descriptor out of these,
+   * and it is what makes a payload that diverges from the `.proto` a compile
+   * error rather than a runtime one.
+   *
+   * ```ts
+   * import { IdentityCreatedSchema } from './gen/iam/identity/v1/events_pb.js';
+   * kafkaPlugin({ messages: { 'iam.identity.created.v1': IdentityCreatedSchema } })
+   * ```
+   */
+  messages?: TopicMessageTypes;
+  /** Override the topic → subject derivation. Default `TopicNameStrategy`. */
+  subjectFor?: (topic: string) => string;
+  /** See `KafkaConfig.schemaCacheTtlMs`. Default 5 minutes; `0` disables. */
+  schemaCacheTtlMs?: number;
 }
 
 const DEFAULT_SCHEMAS_DIR = './schemas';
+const DEFAULT_SCHEMA_CACHE_TTL_MS = 5 * 60_000;
 
 function trimmed(name: string): string | undefined {
   const raw = process.env[name];
@@ -241,6 +284,34 @@ function validate(config: KafkaConfig): KafkaConfig {
     }
   }
 
+  if (config.messages !== undefined) {
+    if (
+      typeof config.messages !== 'object' ||
+      config.messages === null ||
+      Array.isArray(config.messages)
+    ) {
+      throw new KafkaConfigError('messages must be an object keyed by topic.');
+    }
+    for (const [topic, desc] of Object.entries(config.messages)) {
+      if (typeof desc !== 'object' || desc === null || typeof desc.typeName !== 'string') {
+        throw new KafkaConfigError(
+          `messages["${topic}"] must be a Buf-generated message type (e.g. \`IdentityCreatedSchema\`).`,
+        );
+      }
+    }
+  }
+
+  if (config.subjectFor !== undefined && typeof config.subjectFor !== 'function') {
+    throw new KafkaConfigError('subjectFor must be a function when provided.');
+  }
+
+  if (
+    !Number.isFinite(config.schemaCacheTtlMs) ||
+    config.schemaCacheTtlMs < 0
+  ) {
+    throw new KafkaConfigError('schemaCacheTtlMs must be a non-negative number of milliseconds.');
+  }
+
   if (config.tls !== undefined) {
     if (typeof config.tls.enabled !== 'boolean') {
       throw new KafkaConfigError('tls.enabled must be a boolean.');
@@ -308,6 +379,9 @@ export function createKafkaConfig(overrides: KafkaConfigInput = {}): KafkaConfig
     schemasDir:
       overrides.schemasDir ?? trimmed('KAFKA_SCHEMAS_DIR') ?? DEFAULT_SCHEMAS_DIR,
     allowAutoTopicCreation: resolveAllowAutoTopicCreation(),
+    ...(overrides.messages ? { messages: overrides.messages } : {}),
+    ...(overrides.subjectFor ? { subjectFor: overrides.subjectFor } : {}),
+    schemaCacheTtlMs: overrides.schemaCacheTtlMs ?? DEFAULT_SCHEMA_CACHE_TTL_MS,
   };
 
   return validate(config);

@@ -3,6 +3,79 @@
 All notable changes to the `@moribashi/*` packages are documented here. Versions are published in
 lockstep — a release bumps every package to the same version number, even if only some of them changed.
 
+## [Unreleased]
+
+### Fixed
+
+- **`@moribashi/kafka`: protobuf messages were written with non-standard framing.**
+  `@kafkajs/confluent-schema-registry` emits `magic | schemaId | payload` and omits the protobuf
+  **message-index array** the Confluent wire format requires between the schema id and the payload.
+  Found in production on `iam.identity.created.v1`; the first twelve bytes were
+
+  ```
+  00 00 00 00 08 0a 24 66 62 65 31 37
+     ^ magic    ^ id  ^ should be 0x00 (the index array); 0x0a is already a protobuf field tag
+  ```
+
+  It only ever broke *other* consumers. Producer and consumer both omitted the same bytes, so every
+  test passed while Redpanda Console showed `UTF8WITHCONTROLCHARS` and any standard Confluent
+  deserializer — Java, Go, Python, C# — read garbage.
+
+  The fix replaces the library with **`@confluentinc/schemaregistry`**, Confluent's official Node
+  client. The same message now frames as `00 00 00 00 13 00 0a 06 …` — magic, id, `0x00` index
+  array, payload. `src/__tests__/wire-format.test.ts` asserts the prefix byte for byte and runs with
+  no broker; the integration suite additionally reads the topic back **in a separate process** using
+  a stock Confluent deserializer that imports nothing from this package.
+
+- **`@moribashi/kafka`: nested and enum fields decoded as garbage.** Redpanda's registry returns
+  `?format=serialized` descriptors in which a message- or enum-typed field carries only `type_name`,
+  leaving `type` unset for the reader to infer. `@bufbuild/protobuf` does not infer it and links the
+  field as a scalar, so a nested message decoded as a NaN double. Registry descriptors are now
+  repaired before they are linked (`src/descriptors.ts`); a type that cannot be resolved throws
+  instead of decoding wrongly.
+
+### Changed
+
+- **`@moribashi/kafka`: `ProducerMessage.value` is a Buf-generated protobuf message.**
+  `@confluentinc/schemaregistry` is built on `@bufbuild/protobuf` — the same runtime Buf generates
+  against — so the generated message type now feeds the serializer directly and the `.proto` is
+  parsed once instead of twice. A plain object still works, and is initialised into the message type
+  declared for its topic, but with **generated field names**: `display_name` in the `.proto` is
+  `displayName` in the payload.
+- **`@moribashi/kafka`: new required `messages` option** on `kafkaPlugin` / `kafkaConsumerPlugin` /
+  `createKafkaClient` — `Record<topic, GeneratedMessageSchema>`, for every topic a client produces
+  to. The serializer resolves a message's descriptor from it, and it makes producing the wrong event
+  type to a topic an error rather than a coincidence. Consumers need none of it: decoding resolves
+  the writer's descriptor from the schema id on the wire.
+- **`@moribashi/kafka`: decoded values are `@bufbuild/protobuf` messages**, carrying `$typeName` and
+  generated field names, where they used to be plain protobufjs objects with `.proto` field names.
+  Consumers reading `event.value` see this.
+- **`@moribashi/kafka`: the `SchemaRegistryClient` seam is topic-scoped.** `encode(topic, value)` and
+  `decode(topic, payload)` replace `encode(schemaId, payload)` and `decode(payload)` —
+  Confluent's serde derives the subject itself rather than taking a pre-resolved id. `register()`
+  takes `(subject, schema)` and returns the id directly; `clearCaches()` replaces nothing and
+  `getLatestSchemaId()` stays.
+- **`@moribashi/kafka`: `schemaCacheTtlMs` and `subjectFor` moved from `createProducer()` options to
+  client config**, since the registry client now owns id resolution and both sides of the wire need
+  the same subject derivation. `schemaCacheTtlMs` becomes the Confluent client's
+  `cacheLatestTtlSecs`. `producer.clearSchemaCache(subject?)` still exists but clears every cached
+  lookup — the underlying cache is not keyed by subject alone.
+- **`@moribashi/kafka`: new exports** `readWirePrefix()` and `MAGIC_BYTE`, for asserting what a
+  producer actually put on the wire without hand-rolling varint reading.
+
+### Notes
+
+- Boot-time schema registration is **unchanged and still mandatory**. Confluent's serializer will
+  auto-register a subject on first send; it is configured with `autoRegisterSchemas: false` and
+  `useLatestVersion: true` so it cannot. An incompatible contract still fails inside plugin
+  `register()`, which `app.start()` awaits before the port binds — rather than on the first produce,
+  which in svc-iam happens inside Keycloak's token-mint path.
+- `checkSchemaCompatibility()` is untouched: still separable, still non-mutating, still a report
+  rather than a throw.
+- `@confluentinc/schemaregistry` brings AWS/Azure/GCP KMS SDKs, Vault, `simple-oauth2` and `jsonata`
+  with it, for field-level encryption and data contracts this package does not use. That weight was
+  accepted deliberately in exchange for framing that other consumers can read.
+
 ## [0.4.0] - 2026-08-18
 
 ### Added

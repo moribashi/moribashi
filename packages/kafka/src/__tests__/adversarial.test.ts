@@ -186,10 +186,7 @@ describe('hostile schema directories', () => {
 
     // The registry is the authority on what a valid schema is; this package
     // does not parse .proto itself.
-    expect(registry.register).toHaveBeenCalledWith(
-      { type: 'PROTOBUF', schema: '' },
-      { subject: 'empty-value' },
-    );
+    expect(registry.register).toHaveBeenCalledWith('empty-value', '');
   });
 
   it('wraps a registry that throws a non-Error', async () => {
@@ -235,9 +232,9 @@ describe('a registry that misbehaves', () => {
   it('never sends when the registry hangs up mid-batch', async () => {
     let call = 0;
     const { raw, producer } = producerWith({
-      getLatestSchemaId: vi.fn(async () => {
+      encode: vi.fn(async () => {
         if (++call === 2) throw new Error('ECONNRESET');
-        return 1;
+        return Buffer.from('ok');
       }),
     });
 
@@ -250,11 +247,11 @@ describe('a registry that misbehaves', () => {
     expect(raw.send).not.toHaveBeenCalled();
   });
 
-  it('does not poison other subjects when one subject fails', async () => {
+  it('does not poison other topics when one topic fails', async () => {
     const { producer } = producerWith({
-      getLatestSchemaId: vi.fn(async (subject: string) => {
-        if (subject === 'bad-value') throw new Error('missing');
-        return 3;
+      encode: vi.fn(async (topic: string) => {
+        if (topic === 'bad') throw new Error('missing');
+        return Buffer.from('ok');
       }),
     });
 
@@ -264,9 +261,9 @@ describe('a registry that misbehaves', () => {
     await expect(producer.send({ topic: 'good', value: 1 })).resolves.toBeDefined();
   });
 
-  it('lets every concurrent caller see the same failure when a coalesced lookup fails', async () => {
-    const { registry, producer } = producerWith({
-      getLatestSchemaId: vi.fn(async () => {
+  it('lets every concurrent caller see the failure', async () => {
+    const { producer } = producerWith({
+      encode: vi.fn(async () => {
         throw new Error('registry down');
       }),
     });
@@ -277,43 +274,21 @@ describe('a registry that misbehaves', () => {
     ]);
 
     expect(results.every(r => r.status === 'rejected')).toBe(true);
-    expect(registry.getLatestSchemaId).toHaveBeenCalledTimes(1);
   });
 
-  it('re-resolves after a coalesced failure instead of caching it', async () => {
+  it('re-resolves after a failure instead of caching it', async () => {
     let attempt = 0;
-    const { registry, producer } = producerWith({
-      getLatestSchemaId: vi.fn(async () => {
+    const { producer } = producerWith({
+      encode: vi.fn(async () => {
         if (++attempt <= 1) throw new Error('registry down');
-        return 9;
+        return Buffer.from('ok');
       }),
     });
 
-    await Promise.allSettled([
-      producer.send({ topic: 't', value: 1 }),
-      producer.send({ topic: 't', value: 2 }),
-    ]);
-    await expect(producer.send({ topic: 't', value: 3 })).resolves.toBeDefined();
-
-    expect(registry.getLatestSchemaId).toHaveBeenCalledTimes(2);
-  });
-
-  it('tolerates a registry that returns schema id 0', async () => {
-    const { raw, producer } = producerWith({ getLatestSchemaId: vi.fn(async () => 0) });
-
-    await producer.send({ topic: 't', value: { a: 1 } });
-
-    const messages = raw.send.mock.calls[0][0].messages as Array<{ value: Buffer }>;
-    expect(messages[0].value.toString()).toBe('0:{"a":1}');
-  });
-
-  it('caches schema id 0 like any other id', async () => {
-    const { registry, producer } = producerWith({ getLatestSchemaId: vi.fn(async () => 0) });
-
-    await producer.send({ topic: 't', value: 1 });
-    await producer.send({ topic: 't', value: 2 });
-
-    expect(registry.getLatestSchemaId).toHaveBeenCalledTimes(1);
+    await expect(producer.send({ topic: 't', value: 1 })).rejects.toBeInstanceOf(
+      SchemaEncodeError,
+    );
+    await expect(producer.send({ topic: 't', value: 2 })).resolves.toBeDefined();
   });
 
   it('propagates an empty encoded buffer rather than treating it as absent', async () => {
@@ -344,7 +319,7 @@ describe('payload edge cases', () => {
 
     await producer.send({ topic: 't', value: null });
 
-    expect(registry.encode).toHaveBeenCalledWith(42, null);
+    expect(registry.encode).toHaveBeenCalledWith('t', null);
   });
 
   it('does not confuse an empty-string key with an absent key', async () => {
