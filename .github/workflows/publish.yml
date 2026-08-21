@@ -118,6 +118,12 @@ jobs:
           fi
           echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
 
+          # Never abort the run here. A bootstrap needs a token that bypasses
+          # 2FA (Classic *Automation*, or a granular token — a Classic "Publish"
+          # token fails EOTP asking for a one-time password no CI can supply).
+          # If that token is wrong, exactly one package is stuck, and it must not
+          # take the other seven down with it: they publish via OIDC and need no
+          # token at all. The final step below still fails the run.
           for dir in packages/*/; do
             name=$(node -p "require('./${dir}package.json').name")
             version=$(node -p "require('./${dir}package.json').version")
@@ -125,11 +131,51 @@ jobs:
               echo "· $name exists — leaving to OIDC"
             else
               echo "· $name is NEW — bootstrapping $version with token auth"
-              ( cd "$dir" \
-                && ACTIONS_ID_TOKEN_REQUEST_URL= ACTIONS_ID_TOKEN_REQUEST_TOKEN= \
-                   npm publish --access public --provenance=false )
+              if ( cd "$dir" \
+                   && ACTIONS_ID_TOKEN_REQUEST_URL= ACTIONS_ID_TOKEN_REQUEST_TOKEN= \
+                      npm publish --access public --provenance=false ); then
+                echo "  ✓ $name bootstrapped"
+              else
+                echo "  ✗ $name could NOT be bootstrapped — continuing so the rest still publish"
+              fi
             fi
           done
 
-      - name: Publish to npmjs
-        run: pnpm -r --filter './packages/**' publish --access public --no-git-checks
+      - name: Publish to npmjs (trusted publishing)
+        run: |
+          # Exclude anything still missing from the registry. pnpm would try it,
+          # get the anonymous-404 that an unconfigured trusted publisher
+          # produces, and abort — starving every package that comes after it in
+          # the topological order. Self-clearing: once a package exists, nothing
+          # is excluded. Packages already at this version are skipped by pnpm.
+          filters=""
+          for dir in packages/*/; do
+            name=$(node -p "require('./${dir}package.json').name")
+            if ! npm view "$name" versions >/dev/null 2>&1; then
+              echo "excluding $name — not on the registry yet"
+              filters="$filters --filter=!$name"
+            fi
+          done
+          pnpm -r --filter './packages/**' $filters publish --access public --no-git-checks
+
+      # The run must go red if the release is incomplete. Publishing seven of
+      # eight is a broken lockstep release, not a success — `npm i` of the
+      # missing one fails for every consumer.
+      - name: Verify every package published
+        run: |
+          missing=""
+          for dir in packages/*/; do
+            name=$(node -p "require('./${dir}package.json').name")
+            version=$(node -p "require('./${dir}package.json').version")
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "✓ $name@$version"
+            else
+              echo "✗ $name@$version MISSING"
+              missing="$missing $name@$version"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Release incomplete — unpublished:$missing"
+            exit 1
+          fi
+          echo "All packages published."
