@@ -141,6 +141,40 @@ jobs:
             fi
           done
 
+      # ── Adopt any package that is still token-dependent ────────────────────
+      #
+      # A package bootstrapped by token stays token-dependent until someone
+      # configures trusted publishing for it, and nothing announces that it
+      # hasn't been done. @moribashi/auth is the live example: new in 0.3.0,
+      # bootstrapped with a token, never adopted — it is the only package with
+      # no provenance attestation, and it stayed that way for a whole release,
+      # surfacing only when the token grew a 2FA requirement.
+      #
+      # Absence of a provenance attestation is the tell: it means the package
+      # has never once published over OIDC. Packages that already have one are
+      # left strictly alone. Requires the package to exist, so this cannot help
+      # a first publish — that is what the bootstrap step above is for.
+      #
+      # Best-effort: `npm trust` may itself require an OTP, so this must never
+      # fail the run.
+      - name: Adopt token-dependent packages into trusted publishing
+        continue-on-error: true
+        run: |
+          for dir in packages/*/; do
+            name=$(node -p "require('./${dir}package.json').name")
+            npm view "$name" versions >/dev/null 2>&1 || { echo "· $name not on the registry — nothing to adopt"; continue; }
+
+            if [ -n "$(npm view "$name" dist.attestations 2>/dev/null)" ]; then
+              echo "· $name already publishes over OIDC — leaving alone"
+              continue
+            fi
+
+            echo "· $name has never published over OIDC — adopting"
+            npm trust list "$name" 2>&1 | sed 's/^/    list: /' || true
+            npm trust github "$name" --file publish.yml --repo moribashi/moribashi -y \
+              || echo "    ✗ could not configure $name — it stays token-dependent"
+          done
+
       - name: Publish to npmjs (trusted publishing)
         run: |
           # Exclude anything still missing from the registry. pnpm would try it,
